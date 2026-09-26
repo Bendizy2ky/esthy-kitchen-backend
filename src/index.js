@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
 import { SYSTEM_PROMPT } from './config/systemPrompt.js';
-import { callGeminiAI } from './services/aiService.js'; 
+import { generateAIResponse } from './services/aiService.js'; 
 import { sendWhatsAppMessage } from './services/whatsappService.js';
 
 dotenv.config();
@@ -41,7 +41,6 @@ app.post('/webhook/whatsapp', async (req, res) => {
       
       try {
         // 2. Fetch live menu from Supabase
-        // Ensure 'menu' matches your actual table name for food items
         const { data: menuItems, error } = await supabase
           .from('menu') 
           .select('*')
@@ -56,7 +55,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
           `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}`
         ).join('\n');
 
-        // 4. Construct the contextual prompt
+        // 4. Construct the contextual prompt payload for Gemini
         const fullUserPrompt = `
 Customer Phone: ${senderNumber}
 Customer Message: "${textMessage}"
@@ -65,12 +64,16 @@ Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
         `;
 
+        // Combine system prompt and user prompt into a single string for generateAIResponse
+        const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
+
         // 5. Send to Gemini via your aiService
-        const aiResponse = await callGeminiAI({
-          systemPrompt: SYSTEM_PROMPT,
-          userPrompt: fullUserPrompt,
-          customerPhone: senderNumber
-        });
+        const aiResponse = await generateAIResponse(combinedPrompt);
+
+        if (!aiResponse) {
+          console.log('⚠️ Received empty response from Gemini.');
+          return;
+        }
 
         // 6. Check the Guardrail: If it's a personal chat, stay silent
         if (aiResponse.trim() === 'IGNORE_MESSAGE') {
