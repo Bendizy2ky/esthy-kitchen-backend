@@ -1,3 +1,4 @@
+import { handleAdminCommand } from '../services/adminCommands.js'; // Updated to match ES module imports
 import { sendWhatsAppMessage } from '../services/whatsappService.js';
 import { supabase } from '../config/supabase.js';
 // import { generateAIResponse } from '../services/aiService.js'; // We will build this next
@@ -23,39 +24,41 @@ export const processIncomingMessage = async (req, res) => {
     const remoteJid = messageData.key.remoteJid;
     if (remoteJid.includes('@g.us') || remoteJid.includes('@broadcast')) return; 
 
-    // Extract the raw phone number (e.g., 2348138412871)
-    const phoneNumber = remoteJid.split('@')[0];
+    // Extract text and clean sender phone number
+    const text = (messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '').trim();
+    const cleanSender = remoteJid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
 
-    // Extract the text content (Evolution API handles normal and quoted replies slightly differently)
-    const textMessage = 
-      messageData.message?.conversation || 
-      messageData.message?.extendedTextMessage?.text || 
-      "";
+    if (!text) return; // Ignore pure images/audio for now
 
-    if (!textMessage) return; // Ignore pure images/audio for now
-
-    console.log(`💬 New message from ${phoneNumber}: ${textMessage}`);
+    console.log(`💬 New message from ${cleanSender}: ${text}`);
 
     // ---------------------------------------------------------
     // 4. COMMAND ROUTING (Admin / System commands)
     // ---------------------------------------------------------
-    if (textMessage.startsWith('!')) {
+    // --- ADMIN COMMAND CHECK ---
+    if (text.startsWith('!')) {
       // Test Command
-      if (textMessage.startsWith('!ping')) {
-         await sendWhatsAppMessage(phoneNumber, 'Pong! 🏓 The backend is working perfectly.');
+      if (text.startsWith('!ping')) {
+         await sendWhatsAppMessage(cleanSender, 'Pong! 🏓 The backend is working perfectly.');
+         return;
       }
       
-      // We will add the !addcustomer logic here soon!
-      return;
+      const isHandled = await handleAdminCommand(cleanSender, text);
+      if (isHandled) {
+        return; // Command was executed, stop execution so AI doesn't process it
+      }
     }
 
     // ---------------------------------------------------------
     // 5. STANDARD CUSTOMER FLOW
     // ---------------------------------------------------------
+    // --- NORMAL AI CUSTOMER LOGIC BELOW ---
+    // await aiService.processMessage(...);
+
     // Temporary echo reply until we hook up Gemini
-    const replyText = `I received your message: "${textMessage}". We will connect the Gemini AI shortly!`;
+    const replyText = `I received your message: "${text}". We will connect the Gemini AI shortly!`;
     
-    await sendWhatsAppMessage(phoneNumber, replyText);
+    await sendWhatsAppMessage(cleanSender, replyText);
 
   } catch (error) {
     console.error('❌ Error processing webhook:', error);
