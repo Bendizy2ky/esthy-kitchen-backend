@@ -1,7 +1,9 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
-// import { processIncomingMessage } from './controllers/whatsappController.js'; // Commented out as logic is now handled directly in the route below
+import { SYSTEM_PROMPT } from './config/systemPrompt.js';
+import { callGeminiAI } from './services/aiService.js'; 
+import { sendWhatsAppMessage } from './services/whatsappService.js';
 
 dotenv.config();
 
@@ -17,6 +19,9 @@ app.get('/health', (req, res) => {
 
 // WhatsApp Webhook (Receives messages from Evolution API)
 app.post('/webhook/whatsapp', async (req, res) => {
+  // 1. Immediately acknowledge receipt to prevent Evolution API from retrying
+  res.status(200).send('EVENT_RECEIVED');
+
   const { event, data } = req.body;
 
   // Listen for new incoming messages
@@ -34,12 +39,54 @@ app.post('/webhook/whatsapp', async (req, res) => {
     if (!isFromMe && textMessage && senderNumber !== 'status@broadcast') {
       console.log(`💬 Received message from ${senderNumber}: ${textMessage}`);
       
-      // Handle command logic (e.g., !menu, !soldout, orders) directly here
+      try {
+        // 2. Fetch live menu from Supabase
+        // Ensure 'menu' matches your actual table name for food items
+        const { data: menuItems, error } = await supabase
+          .from('menu') 
+          .select('*')
+          .eq('is_available', true);
+
+        if (error) {
+          console.error('Error fetching menu from Supabase:', error);
+        }
+
+        // 3. Format the menu for the AI Prompt
+        const formattedMenu = (menuItems || []).map(item => 
+          `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}`
+        ).join('\n');
+
+        // 4. Construct the contextual prompt
+        const fullUserPrompt = `
+Customer Phone: ${senderNumber}
+Customer Message: "${textMessage}"
+
+Today's Live Menu:
+${formattedMenu || 'EMPTY'}
+        `;
+
+        // 5. Send to Gemini via your aiService
+        const aiResponse = await callGeminiAI({
+          systemPrompt: SYSTEM_PROMPT,
+          userPrompt: fullUserPrompt,
+          customerPhone: senderNumber
+        });
+
+        // 6. Check the Guardrail: If it's a personal chat, stay silent
+        if (aiResponse.trim() === 'IGNORE_MESSAGE') {
+          console.log(`🤐 Personal message from ${senderNumber} classified as non-business. Ignored.`);
+          return; // Exit function quietly
+        }
+
+        // 7. Send the business reply back to the customer
+        await sendWhatsAppMessage(senderNumber, aiResponse);
+        console.log(`✅ AI Response sent to ${senderNumber}`);
+
+      } catch (error) {
+        console.error('❌ Error processing AI workflow:', error);
+      }
     }
   }
-
-  // Always return a 200 OK fast so Evolution API knows the webhook succeeded
-  res.status(200).send('EVENT_RECEIVED');
 });
 
 // Paystack Webhook (Receives payment success notifications)
