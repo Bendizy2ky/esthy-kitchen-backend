@@ -88,23 +88,19 @@ When a customer is ready to complete an order, ask ONLY for their delivery addre
 DO NOT ask the customer for their phone number. Their WhatsApp phone number is already provided in the input context as customer_phone.
 Automatically pass customer_phone directly into the create_paystack_checkout tool when creating the checkout link.`;
 
-export async function generateAIResponse(userPhoneNumber, incomingMessage, chatHistory = [], liveMenuContext = '') {
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-
-  // Format past Supabase messages into Gemini's history structure
-  const formattedHistory = chatHistory.map(msg => ({
-    role: msg.sender === 'user' ? 'user' : 'model',
-    parts: [{ text: msg.content }]
-  }));
-
-  // Append live menu data context into system instruction or initial prompt
-  const fullSystemInstruction = `${SYSTEM_PROMPT}\n\n[CURRENT LIVE MENU FROM SUPABASE]:\n${liveMenuContext}\n\nCustomer Phone Number: ${userPhoneNumber}`;
-
-  const chat = model.startChat({
-    history: formattedHistory,
-    systemInstruction: fullSystemInstruction,
+export async function generateAIResponse(promptContext) {
+  const model = genAI.getGenerativeModel({ 
+    model: 'gemini-1.5-flash',
+    systemInstruction: SYSTEM_PROMPT 
   });
 
-  const result = await chat.sendMessage(incomingMessage);
-  return result.response.text();
+  try {
+    // Use generateContent instead of startChat because the incoming promptContext 
+    // from index.js is already fully assembled as a single string.
+    const result = await model.generateContent(promptContext);
+    return result.response.text();
+  } catch (error) {
+    console.error('Gemini API Error:', error);
+    throw error;
+  }
 }
