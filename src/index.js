@@ -63,34 +63,15 @@ Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
         `;
 
+        // Define the AI System Instructions directly
+        const SYSTEM_PROMPT = `You are the friendly AI assistant for Esthy's Spicy Kitchen.
+Help customers with menu inquiries and taking orders based ONLY on today's live menu.
+
+CRITICAL GUARDRAIL:
+If the user message is a personal chat, off-topic statement, or not related to ordering/inquiring about food, reply ONLY with the text: IGNORE_MESSAGE`;
+
         // Combine system prompt and user prompt into a single string for generateAIResponse
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
-
-        // 5. Send to Gemini via your aiService
-        const aiResponse = await generateAIResponse(combinedPrompt);
-
-        if (!aiResponse) {
-          console.log('⚠️ Received empty response from Gemini.');
-          return;
-        }
-
-        // 6. Check the Guardrail: If it's a personal chat, stay silent
-        if (aiResponse.trim() === 'IGNORE_MESSAGE') {
-          console.log(`🤐 Personal message from ${senderNumber} classified as non-business. Ignored.`);
-          return; // Exit function quietly
-        }
-
-        // 7. Send the business reply back to the customer
-        await sendWhatsAppMessage(senderNumber, aiResponse);
-        console.log(`✅ AI Response sent to ${senderNumber}`);
-
-      } catch (error) {
-        console.error('❌ Error processing AI workflow:', error);
-      }
-    }
-  }
-});
-
 // Paystack Webhook (Receives payment success notifications)
 app.post('/webhook/paystack', async (req, res) => {
   res.status(200).send('Webhook received');
