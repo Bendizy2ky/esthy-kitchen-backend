@@ -48,6 +48,11 @@ app.post('/webhook/paystack', async (req, res) => {
   console.log('💳 Incoming Paystack Event:', JSON.stringify(req.body, null, 2));
 });
 
+// Health check route for UptimeRobot
+app.get('/', (req, res) => {
+  res.status(200).send('Esthy Kitchen Backend is online!');
+});
+
 app.listen(port, () => {
   console.log(`🚀 Server is awake and listening on port ${port}`);
 });
