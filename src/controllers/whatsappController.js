@@ -1,7 +1,7 @@
-import { handleAdminCommand } from '../services/adminCommands.js'; // Updated to match ES module imports
+import { handleAdminCommand } from '../services/adminCommands.js';
 import { sendWhatsAppMessage } from '../services/whatsappService.js';
 import { supabase } from '../config/supabase.js';
-// import { generateAIResponse } from '../services/aiService.js'; // We will build this next
+import { generateAIResponse } from '../services/aiService.js';
 
 export const processIncomingMessage = async (req, res) => {
   // 1. Acknowledge receipt immediately so Evolution API doesn't timeout and retry
@@ -35,7 +35,6 @@ export const processIncomingMessage = async (req, res) => {
     // ---------------------------------------------------------
     // 4. COMMAND ROUTING (Admin / System commands)
     // ---------------------------------------------------------
-    // --- ADMIN COMMAND CHECK ---
     if (text.startsWith('!')) {
       // Test Command
       if (text.startsWith('!ping')) {
@@ -50,15 +49,62 @@ export const processIncomingMessage = async (req, res) => {
     }
 
     // ---------------------------------------------------------
-    // 5. STANDARD CUSTOMER FLOW
+    // 5. STANDARD CUSTOMER FLOW (Gemini AI Pipeline)
     // ---------------------------------------------------------
-    // --- NORMAL AI CUSTOMER LOGIC BELOW ---
-    // await aiService.processMessage(...);
 
-    // Temporary echo reply until we hook up Gemini
-    const replyText = `I received your message: "${text}". We will connect the Gemini AI shortly!`;
-    
-    await sendWhatsAppMessage(cleanSender, replyText);
+    // A. Fetch recent chat history from Supabase (Last 10 messages for memory)
+    const { data: chatHistory, error: historyError } = await supabase
+      .from('chat_history')
+      .select('sender, content')
+      .eq('phone_number', cleanSender)
+      .order('created_at', { ascending: true })
+      .limit(10);
+
+    if (historyError) {
+      console.error('⚠️ Error fetching chat history from Supabase:', historyError);
+    }
+
+    // B. Fetch live menu items from Supabase
+    const { data: menuItems, error: menuError } = await supabase
+      .from('menu_items')
+      .select('*')
+      .eq('is_available', true);
+
+    let liveMenuContext = '';
+    if (menuError || !menuItems || menuItems.length === 0) {
+      console.error('⚠️ Error or no live menu items found:', menuError);
+    } else {
+      liveMenuContext = menuItems
+        .map(item => `- ${item.name}: ₦${item.price}`)
+        .join('\n');
+    }
+
+    // C. Generate AI Response with full chat history & menu context
+    const aiResponse = await generateAIResponse(
+      cleanSender,
+      text,
+      chatHistory || [],
+      liveMenuContext
+    );
+
+    // D. If classified as personal/non-business, ignore and exit silently
+    if (!aiResponse || aiResponse.trim() === 'IGNORE_MESSAGE') {
+      console.log(`🤫 Personal/Non-business message from ${cleanSender}. Ignoring.`);
+      return;
+    }
+
+    // E. Save both incoming message and AI reply to Supabase chat history
+    const { error: saveError } = await supabase.from('chat_history').insert([
+      { phone_number: cleanSender, sender: 'user', content: text },
+      { phone_number: cleanSender, sender: 'model', content: aiResponse }
+    ]);
+
+    if (saveError) {
+      console.error('⚠️ Error saving messages to chat_history:', saveError);
+    }
+
+    // F. Send WhatsApp message back to customer
+    await sendWhatsAppMessage(cleanSender, aiResponse);
 
   } catch (error) {
     console.error('❌ Error processing webhook:', error);
