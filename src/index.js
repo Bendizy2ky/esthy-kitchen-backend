@@ -1,7 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
-import { SYSTEM_PROMPT } from './config/systemPrompt.js';
 import { generateAIResponse } from './services/aiService.js'; 
 import { sendWhatsAppMessage } from './services/whatsappService.js';
 
