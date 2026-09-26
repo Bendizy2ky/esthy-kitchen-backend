@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
 import { generateAIResponse } from './services/aiService.js'; 
 import { sendWhatsAppMessage } from './services/whatsappService.js';
+import { getChatHistory, saveChatMessage } from './services/chatService.js';
 
 dotenv.config();
 

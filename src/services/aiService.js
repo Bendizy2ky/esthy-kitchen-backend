@@ -90,17 +90,28 @@ Automatically pass customer_phone directly into the create_paystack_checkout too
 
 export async function generateAIResponse(promptContext) {
   const model = genAI.getGenerativeModel({ 
-    model: 'gemini-3.8-flash',
+    model: 'gemini-1.5-flash', // Stable, fast, free-tier model
     systemInstruction: SYSTEM_PROMPT 
   });
 
-  try {
-    // Use generateContent instead of startChat because the incoming promptContext 
-    // from index.js is already fully assembled as a single string.
-    const result = await model.generateContent(promptContext);
-    return result.response.text();
-  } catch (error) {
-    console.error('Gemini API Error:', error);
-    throw error;
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1500; // 1.5 seconds delay between retries
+
+  // Attempt to call the API, with automatic retry on failure
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const result = await model.generateContent(promptContext);
+      return result.response.text();
+    } catch (error) {
+      console.error(`⚠️ Gemini API Error (Attempt ${attempt}/${MAX_RETRIES}):`, error.message);
+      
+      // If we have reached the maximum number of retries, throw the error to be handled by index.js
+      if (attempt === MAX_RETRIES) {
+        throw error;
+      }
+      
+      // Wait for RETRY_DELAY_MS before trying again (avoids 503 and 429 rate limit errors)
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+    }
   }
 }

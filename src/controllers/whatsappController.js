@@ -1,7 +1,7 @@
-import { handleAdminCommand } from '../services/adminCommands.js';
 import { sendWhatsAppMessage } from '../services/whatsappService.js';
 import { supabase } from '../config/supabase.js';
-import { generateAIResponse } from '../services/aiService.js';
+import { generateAIResponse, SYSTEM_PROMPT } from '../services/aiService.js';
+import { getChatHistory, saveChatMessage } from '../services/chatService.js';
 
 export const processIncomingMessage = async (req, res) => {
   // 1. Acknowledge receipt immediately so Evolution API doesn't timeout and retry
@@ -24,89 +24,85 @@ export const processIncomingMessage = async (req, res) => {
     const remoteJid = messageData.key.remoteJid;
     if (remoteJid.includes('@g.us') || remoteJid.includes('@broadcast')) return; 
 
-    // Extract text and clean sender phone number
-    const text = (messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '').trim();
-    const cleanSender = remoteJid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+    // Extract the raw phone number (e.g., 2348138412871)
+    const senderNumber = remoteJid.split('@')[0];
 
-    if (!text) return; // Ignore pure images/audio for now
+    // Extract the text content
+    const textMessage = 
+      messageData.message?.conversation || 
+      messageData.message?.extendedTextMessage?.text || 
+      "";
 
-    console.log(`💬 New message from ${cleanSender}: ${text}`);
+    if (!textMessage) return; // Ignore pure images/audio for now
+
+    console.log(`💬 New message from ${senderNumber}: ${textMessage}`);
 
     // ---------------------------------------------------------
     // 4. COMMAND ROUTING (Admin / System commands)
     // ---------------------------------------------------------
-    if (text.startsWith('!')) {
-      // Test Command
-      if (text.startsWith('!ping')) {
-         await sendWhatsAppMessage(cleanSender, 'Pong! 🏓 The backend is working perfectly.');
-         return;
+    if (textMessage.startsWith('!')) {
+      if (textMessage.startsWith('!ping')) {
+         await sendWhatsAppMessage(senderNumber, 'Pong! 🏓 The backend is working perfectly.');
       }
-      
-      const isHandled = await handleAdminCommand(cleanSender, text);
-      if (isHandled) {
-        return; // Command was executed, stop execution so AI doesn't process it
-      }
-    }
-
-    // ---------------------------------------------------------
-    // 5. STANDARD CUSTOMER FLOW (Gemini AI Pipeline)
-    // ---------------------------------------------------------
-
-    // A. Fetch recent chat history from Supabase (Last 10 messages for memory)
-    const { data: chatHistory, error: historyError } = await supabase
-      .from('chat_history')
-      .select('sender, content')
-      .eq('phone_number', cleanSender)
-      .order('created_at', { ascending: true })
-      .limit(10);
-
-    if (historyError) {
-      console.error('⚠️ Error fetching chat history from Supabase:', historyError);
-    }
-
-    // B. Fetch live menu items from Supabase
-    const { data: menuItems, error: menuError } = await supabase
-      .from('menu_items')
-      .select('*')
-      .eq('is_available', true);
-
-    let liveMenuContext = '';
-    if (menuError || !menuItems || menuItems.length === 0) {
-      console.error('⚠️ Error or no live menu items found:', menuError);
-    } else {
-      liveMenuContext = menuItems
-        .map(item => `- ${item.name}: ₦${item.price}`)
-        .join('\n');
-    }
-
-    // C. Generate AI Response with full chat history & menu context
-    const aiResponse = await generateAIResponse(
-      cleanSender,
-      text,
-      chatHistory || [],
-      liveMenuContext
-    );
-
-    // D. If classified as personal/non-business, ignore and exit silently
-    if (!aiResponse || aiResponse.trim() === 'IGNORE_MESSAGE') {
-      console.log(`🤫 Personal/Non-business message from ${cleanSender}. Ignoring.`);
       return;
     }
 
-    // E. Save both incoming message and AI reply to Supabase chat history
-    const { error: saveError } = await supabase.from('chat_history').insert([
-      { phone_number: cleanSender, sender: 'user', content: text },
-      { phone_number: cleanSender, sender: 'model', content: aiResponse }
-    ]);
+    // ---------------------------------------------------------
+    // 5. STANDARD CUSTOMER FLOW WITH MEMORY & AI
+    // ---------------------------------------------------------
+    // 1. Immediately save the incoming user message to memory
+    await saveChatMessage(senderNumber, 'user', textMessage);
 
-    if (saveError) {
-      console.error('⚠️ Error saving messages to chat_history:', saveError);
+    // 2. Fetch live menu from Supabase
+    const { data: menuItems, error } = await supabase
+      .from('menu') 
+      .select('*')
+      .eq('is_available', true);
+
+    if (error) console.error('Error fetching menu from Supabase:', error);
+
+    const formattedMenu = (menuItems || []).map(item => 
+      `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}`
+    ).join('\n');
+
+    // 3. Fetch the last 8 messages to give the AI context
+    const history = await getChatHistory(senderNumber, 8);
+    const historyText = history.map(msg => 
+      `${msg.role === 'user' ? 'Customer' : 'Assistant'}: ${msg.content}`
+    ).join('\n');
+
+    // 4. Construct the contextual prompt payload for Gemini
+    const fullUserPrompt = `
+Customer Phone: ${senderNumber}
+
+Recent Chat History:
+${historyText || 'No previous history.'}
+
+Today's Live Menu:
+${formattedMenu || 'EMPTY'}
+    `;
+
+    const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
+
+    // 5. Send to Gemini
+    const aiResponse = await generateAIResponse(combinedPrompt);
+
+    if (!aiResponse) return;
+
+    // 6. Check Guardrail
+    if (aiResponse.trim() === 'IGNORE_MESSAGE') {
+      console.log(`🤐 Message from ${senderNumber} ignored (Non-business/Chit-chat).`);
+      return; 
     }
 
-    // F. Send WhatsApp message back to customer
-    await sendWhatsAppMessage(cleanSender, aiResponse);
+    // 7. Send reply to WhatsApp
+    await sendWhatsAppMessage(senderNumber, aiResponse);
+    console.log(`✅ AI Response sent to ${senderNumber}`);
+
+    // 8. Save the AI's response to memory so it remembers what it just said
+    await saveChatMessage(senderNumber, 'model', aiResponse);
 
   } catch (error) {
-    console.error('❌ Error processing webhook:', error);
+    console.error('❌ Error processing AI workflow:', error);
   }
 };
