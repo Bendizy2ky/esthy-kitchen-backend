@@ -4,7 +4,7 @@
   "description": "Custom backend for Esthy's Spicy Kitchen AI automation",
   "main": "src/index.js",
   "type": "module",
- "scripts": {
+  "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js"
   },
@@ -12,7 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@google/genai": "^0.1.1",
+    "@google/genai": "^2.24.0",
     "@supabase/supabase-js": "^2.45.0",
     "axios": "^1.7.7",
     "dotenv": "^16.4.5",
