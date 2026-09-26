@@ -42,7 +42,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
       try {
         // 2. Fetch live menu from Supabase
         const { data: menuItems, error } = await supabase
-          .from('menu') 
+          .from('menu_items') 
           .select('*')
           .eq('is_available', true);
 
