@@ -90,7 +90,7 @@ Automatically pass customer_phone directly into the create_paystack_checkout too
 
 export async function generateAIResponse(promptContext) {
   const model = genAI.getGenerativeModel({ 
-    model: 'gemini-1.5-flash', // Stable, fast, free-tier model
+    model: 'gemini-3.8-flash', // Stable, fast, free-tier model
     systemInstruction: SYSTEM_PROMPT 
   });
 
