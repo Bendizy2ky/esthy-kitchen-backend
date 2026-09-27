@@ -1,7 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
-import { generateAIResponse } from './services/aiService.js'; 
+import { generateAIResponse, SYSTEM_PROMPT } from './services/aiService.js'; 
 import { sendWhatsAppMessage } from './services/whatsappService.js';
 import { getChatHistory, saveChatMessage } from './services/chatService.js';
 
@@ -40,6 +40,9 @@ app.post('/webhook/whatsapp', async (req, res) => {
       console.log(`💬 Received message from ${senderNumber}: ${textMessage}`);
       
       try {
+        // ---> MEMORY ADDITION 1: Save incoming message to database
+        await saveChatMessage(senderNumber, 'user', textMessage);
+
         // 2. Fetch live menu from Supabase
         const { data: menuItems, error } = await supabase
           .from('menu_items') 
@@ -55,26 +58,29 @@ app.post('/webhook/whatsapp', async (req, res) => {
           `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}`
         ).join('\n');
 
+        // ---> MEMORY ADDITION 2: Fetch the chat history
+        const history = await getChatHistory(senderNumber, 8);
+        const historyText = history.map(msg => 
+          `${msg.role === 'user' ? 'Customer' : 'Assistant'}: ${msg.content}`
+        ).join('\n');
+
         // 4. Construct the contextual prompt payload for Gemini
         const fullUserPrompt = `
 Customer Phone: ${senderNumber}
-Customer Message: "${textMessage}"
+
+Recent Chat History:
+${historyText || 'No previous history.'}
+
+Customer's New Message: "${textMessage}"
 
 Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
         `;
 
-        // Define the AI System Instructions directly
-        const SYSTEM_PROMPT = `You are the polite AI Restaurant Assistant for Esthy's Spicy Kitchen.
-Help customers with menu inquiries and taking orders based ONLY on today's live menu.
-
-CRITICAL GUARDRAIL:
-If the user message is a personal chat, off-topic statement, or not related to ordering/inquiring about food, reply ONLY with the text: IGNORE_MESSAGE`;
-
-        // Combine system prompt and user prompt into a single string for generateAIResponse
+        // 5. Combine the master system prompt with the user context
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
 
-        // 5. Send to Gemini
+        // 6. Send to Gemini
         const aiResponse = await generateAIResponse(combinedPrompt);
 
         if (!aiResponse) {
@@ -82,15 +88,18 @@ If the user message is a personal chat, off-topic statement, or not related to o
           return;
         }
 
-        // 6. Check the Guardrail: If it's a personal chat, stay silent
+        // 7. Check the Guardrail: If it's a personal chat, stay silent
         if (aiResponse.trim() === 'IGNORE_MESSAGE') {
           console.log(`🤐 Personal message from ${senderNumber} classified as non-business. Ignored.`);
           return;
         }
 
-        // 7. Send the business reply back to the customer
+        // 8. Send the business reply back to the customer
         await sendWhatsAppMessage(senderNumber, aiResponse);
         console.log(`✅ AI Response sent to ${senderNumber}`);
+
+        // ---> MEMORY ADDITION 3: Save AI's response to database
+        await saveChatMessage(senderNumber, 'model', aiResponse);
 
       } catch (error) {
         console.error('❌ Error processing AI workflow:', error);
