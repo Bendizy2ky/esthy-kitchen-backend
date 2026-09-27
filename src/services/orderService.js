@@ -2,19 +2,35 @@
 import { supabase } from '../config/supabase.js';
 
 /**
- * Creates an order in the database and links the individual cart items to it.
+ * Creates an order in the database and links only food items to order_items.
  */
 export async function createCompleteOrder(orderData, cartItems) {
   try {
-    // 1. Insert the main order record
+    const rawItems = cartItems || [];
+
+    // 1. Separate food items from the delivery fee
+    const foodItems = rawItems.filter(
+      item => !item.item_name.toLowerCase().includes('delivery')
+    );
+
+    const deliveryItem = rawItems.find(
+      item => item.item_name.toLowerCase().includes('delivery')
+    );
+
+    const deliveryFee = deliveryItem 
+      ? Number(deliveryItem.unit_price) * Number(deliveryItem.quantity) 
+      : 0;
+
+    // 2. Insert main order record with the standalone delivery_fee
     const { data: newOrder, error: orderError } = await supabase
       .from('orders')
       .insert([{
           reference: orderData.reference,
           customer_phone: orderData.customerPhone || 'Unknown',
           amount: orderData.amount,
+          delivery_fee: deliveryFee,
           email: orderData.customerEmail,
-          cart_summary: cartItems 
+          cart_summary: rawItems 
       }])
       .select('id')
       .single();
@@ -26,9 +42,9 @@ export async function createCompleteOrder(orderData, cartItems) {
 
     const orderId = newOrder.id;
 
-    // 2. Insert the individual line items if the cart is not empty
-    if (cartItems && cartItems.length > 0) {
-      const orderItemsToInsert = cartItems.map(item => ({
+    // 3. Insert ONLY food/drink items into order_items
+    if (foodItems.length > 0) {
+      const orderItemsToInsert = foodItems.map(item => ({
         order_id: orderId,
         item_name: item.item_name,
         quantity: item.quantity,
@@ -41,7 +57,6 @@ export async function createCompleteOrder(orderData, cartItems) {
 
       if (itemsError) {
         console.error('❌ Supabase Order Items Insert Error:', itemsError.message);
-        // We still return success for the main order, as the customer paid
       }
     }
 
