@@ -1,5 +1,8 @@
 export async function generatePaymentLink(amountInNaira, customerPhone, email = "orders@esthyskitchen.com") {
   const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
+  
+  // This must be the EXACT number your bot uses on Evolution API (e.g., 2349117590168)
+  const botWhatsappNumber = process.env.BOT_WHATSAPP_NUMBER || "2349117590168"; 
 
   if (!paystackSecretKey) {
     console.error('PAYSTACK_SECRET_KEY is missing.');
@@ -19,6 +22,8 @@ export async function generatePaymentLink(amountInNaira, customerPhone, email = 
         email: email,
         amount: amountInKobo,
         channels: ['card', 'bank', 'ussd', 'bank_transfer'],
+        // Native URI deep-link to force the phone back to the WhatsApp app
+        callback_url: `whatsapp://send?phone=${botWhatsappNumber}`,
         metadata: {
           customer_phone: customerPhone
         }
