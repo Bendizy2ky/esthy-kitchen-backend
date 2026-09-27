@@ -51,12 +51,18 @@ RULES & INTENT HANDLING:
 2. Bulk Main Course Discount = ₦500 (5 or more Main Courses).
 `;
 
+// Active, stable Groq model identifiers
+const GROQ_MODELS = [
+  'llama3-70b-8192',
+  'llama3-8b-8192',
+  'mixtral-8x7b-32768',
+  'gemma2-9b-it'
+];
+
 export async function generateAIResponse(promptContext) {
-  // Primary high-reasoning model with failover to high-speed instant model
-  const GROQ_MODELS = [
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant'
-  ];
+  if (!groq) {
+    throw new Error('GROQ_API_KEY is not configured in environment variables.');
+  }
 
   for (const modelName of GROQ_MODELS) {
     try {
@@ -70,10 +76,11 @@ export async function generateAIResponse(promptContext) {
       });
 
       const responseText = completion.choices[0]?.message?.content || '';
-      if (responseText) return responseText;
-
+      if (responseText) {
+        return responseText;
+      }
     } catch (error) {
-      console.warn(`⚠️ Groq API Error on ${modelName}: ${error.message}`);
+      console.warn(`⚠️ Groq API Error on ${modelName}:`, error.message);
     }
   }
 
