@@ -167,7 +167,30 @@ app.post('/webhook/paystack', async (req, res) => {
     
     // Extract cart summary & optional metadata passed during payment link creation
     const cartSummary = data.metadata?.cart_data || []; 
-    const deliveryAddress = data.metadata?.delivery_address;
+    let deliveryAddress = data.metadata?.delivery_address;
+
+    // --- SMART ADDRESS FALLBACK LAYER ---
+    // If metadata lacks the address, pull last user message from chat logs
+    if ((!deliveryAddress || deliveryAddress === 'Address provided in chat') && customerPhone) {
+      try {
+        const { data: lastUserMsg } = await supabase
+          .from('chat_history')
+          .select('content')
+          .eq('phone_number', customerPhone)
+          .eq('role', 'user')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+
+        if (lastUserMsg && lastUserMsg.content) {
+          deliveryAddress = lastUserMsg.content;
+        }
+      } catch (err) {
+        console.warn('⚠️ Could not fetch fallback address from chat history:', err.message);
+      }
+    }
+    // ------------------------------------
+
     const isPickup = data.metadata?.is_pickup || (!deliveryAddress && !cartSummary.some(i => i.item_name.toLowerCase().includes('delivery')));
 
     console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref: ${reference})`);
@@ -209,9 +232,9 @@ app.post('/webhook/paystack', async (req, res) => {
         .join('\n');
 
       const fulfillmentTypeHeader = isPickup ? '🛍️ *SELF-PICKUP*' : '🚚 *DELIVERY ORDER*';
-      const addressSection = isPickup 
+      const addressDisplay = isPickup 
         ? '📍 *Fulfillment:* Customer will pick up at restaurant' 
-        : `📍 *Delivery Address:* ${deliveryAddress || 'Address provided in chat'}`;
+        : `📍 *Delivery Address:* ${deliveryAddress || 'Not provided'}`;
 
       const kitchenAlert = 
 `👨‍🍳 *NEW PAID ORDER RECEIVED!*
@@ -220,7 +243,7 @@ ${fulfillmentTypeHeader}
 *Ref:* ${reference}
 *Customer Phone:* wa.me/${customerPhone?.replace(/[^0-9]/g, '')} (${customerPhone})
 
-${addressSection}
+${addressDisplay}
 
 🍲 *ITEMS TO PREPARE:*
 ${foodItemsToPrepare || '• See order reference in DB'}
