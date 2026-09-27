@@ -4,6 +4,7 @@ import { supabase } from './config/supabase.js';
 import { generateAIResponse, SYSTEM_PROMPT } from './services/aiService.js'; 
 import { sendWhatsAppMessage } from './services/whatsappService.js';
 import { getChatHistory, saveChatMessage } from './services/chatService.js';
+import { generatePaymentLink } from './services/paystackService.js';
 
 dotenv.config();
 
@@ -80,11 +81,11 @@ ${formattedMenu || 'EMPTY'}
         // 5. Combine the master system prompt with the user context
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
 
-        // 6. Send to Gemini
-        const aiResponse = await generateAIResponse(combinedPrompt);
+        // 6. Send to Gemini (changed to let so we can modify it)
+        let aiResponse = await generateAIResponse(combinedPrompt);
 
         if (!aiResponse) {
-          console.log('⚠️ Received empty response from Gemini.');
+          console.log('⚠️ Received empty response from Groq.');
           return;
         }
 
@@ -92,6 +93,27 @@ ${formattedMenu || 'EMPTY'}
         if (aiResponse.trim() === 'IGNORE_MESSAGE') {
           console.log(`🤐 Personal message from ${senderNumber} classified as non-business. Ignored.`);
           return;
+        }
+
+        // ---> PAYSTACK ADDITION: Intercept and replace the payment tag
+        const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
+
+        if (paymentMatch) {
+          const amount = parseInt(paymentMatch[1], 10);
+          console.log(`💳 Triggering Paystack link generation for ₦${amount}`);
+          const paymentUrl = await generatePaymentLink(amount);
+          
+          if (paymentUrl) {
+            aiResponse = aiResponse.replace(
+              paymentMatch[0], 
+              `\nHere is your secure payment link: ${paymentUrl}\n\nPlease let me know once you have completed the transfer!`
+            );
+          } else {
+            aiResponse = aiResponse.replace(
+              paymentMatch[0], 
+              `\nI'm currently unable to generate a payment link. Please manually transfer ₦${amount} to our bank account and send the receipt.`
+            );
+          }
         }
 
         // 8. Send the business reply back to the customer
