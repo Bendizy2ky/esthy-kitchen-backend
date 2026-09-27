@@ -53,9 +53,9 @@ RULES & INTENT HANDLING:
 
 // Active, stable Groq model identifiers
 const GROQ_MODELS = [
-  'gpt-oss-120b',
-  'gpt-oss-20b',
-  'qwen-3.8-27b'
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b'
 ];
 
 export async function generateAIResponse(promptContext) {
