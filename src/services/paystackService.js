@@ -1,4 +1,4 @@
-export async function generatePaymentLink(amountInNaira, email = "orders@esthyskitchen.com") {
+export async function generatePaymentLink(amountInNaira, customerPhone, email = "orders@esthyskitchen.com") {
   const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
 
   if (!paystackSecretKey) {
@@ -6,7 +6,6 @@ export async function generatePaymentLink(amountInNaira, email = "orders@esthysk
     return null;
   }
 
-  // Paystack processes transactions in kobo (multiply Naira by 100)
   const amountInKobo = amountInNaira * 100;
 
   try {
@@ -19,8 +18,10 @@ export async function generatePaymentLink(amountInNaira, email = "orders@esthysk
       body: JSON.stringify({
         email: email,
         amount: amountInKobo,
-        // Optional: you can restrict payment channels here if needed
-        channels: ['card', 'bank', 'ussd', 'bank_transfer'] 
+        channels: ['card', 'bank', 'ussd', 'bank_transfer'],
+        metadata: {
+          customer_phone: customerPhone
+        }
       })
     });
 
@@ -30,7 +31,6 @@ export async function generatePaymentLink(amountInNaira, email = "orders@esthysk
       throw new Error(data.message);
     }
 
-    // Returns the checkout URL (e.g., https://checkout.paystack.com/...)
     return data.data.authorization_url; 
     
   } catch (error) {

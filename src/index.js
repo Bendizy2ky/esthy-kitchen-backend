@@ -41,7 +41,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
       console.log(`💬 Received message from ${senderNumber}: ${textMessage}`);
       
       try {
-        // ---> MEMORY ADDITION 1: Save incoming message to database
+        // 1. Save incoming message to database
         await saveChatMessage(senderNumber, 'user', textMessage);
 
         // 2. Fetch live menu from Supabase
@@ -59,13 +59,13 @@ app.post('/webhook/whatsapp', async (req, res) => {
           `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}`
         ).join('\n');
 
-        // ---> MEMORY ADDITION 2: Fetch the chat history
+        // 4. Fetch the chat history
         const history = await getChatHistory(senderNumber, 8);
         const historyText = history.map(msg => 
           `${msg.role === 'user' ? 'Customer' : 'Assistant'}: ${msg.content}`
         ).join('\n');
 
-        // 4. Construct the contextual prompt payload for Gemini
+        // 5. Construct the contextual prompt payload for Groq
         const fullUserPrompt = `
 Customer Phone: ${senderNumber}
 
@@ -78,10 +78,10 @@ Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
         `;
 
-        // 5. Combine the master system prompt with the user context
+        // 6. Combine the master system prompt with the user context
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
 
-        // 6. Send to Gemini (changed to let so we can modify it)
+        // 7. Send to Groq AI
         let aiResponse = await generateAIResponse(combinedPrompt);
 
         if (!aiResponse) {
@@ -89,19 +89,21 @@ ${formattedMenu || 'EMPTY'}
           return;
         }
 
-        // 7. Check the Guardrail: If it's a personal chat, stay silent
+        // 8. Personal Chat Guardrail: Stay silent if non-business
         if (aiResponse.trim() === 'IGNORE_MESSAGE') {
           console.log(`🤐 Personal message from ${senderNumber} classified as non-business. Ignored.`);
           return;
         }
 
-        // ---> PAYSTACK ADDITION: Intercept and replace the payment tag
+        // 9. Intercept and replace the payment trigger tag
         const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
 
         if (paymentMatch) {
           const amount = parseInt(paymentMatch[1], 10);
           console.log(`💳 Triggering Paystack link generation for ₦${amount}`);
-          const paymentUrl = await generatePaymentLink(amount);
+          
+          // Pass senderNumber so Paystack metadata captures the customer's phone
+          const paymentUrl = await generatePaymentLink(amount, senderNumber);
           
           if (paymentUrl) {
             aiResponse = aiResponse.replace(
@@ -116,11 +118,11 @@ ${formattedMenu || 'EMPTY'}
           }
         }
 
-        // 8. Send the business reply back to the customer
+        // 10. Send the business reply back to WhatsApp
         await sendWhatsAppMessage(senderNumber, aiResponse);
         console.log(`✅ AI Response sent to ${senderNumber}`);
 
-        // ---> MEMORY ADDITION 3: Save AI's response to database
+        // 11. Save AI's response to database
         await saveChatMessage(senderNumber, 'model', aiResponse);
 
       } catch (error) {
@@ -132,8 +134,51 @@ ${formattedMenu || 'EMPTY'}
 
 // Paystack Webhook (Receives payment success notifications)
 app.post('/webhook/paystack', async (req, res) => {
+  // Acknowledge Paystack immediately to prevent retry loops
   res.status(200).send('Webhook received');
-  console.log('💳 Incoming Paystack Event:', JSON.stringify(req.body, null, 2));
+
+  const event = req.body;
+
+  if (event && event.event === 'charge.success') {
+    const data = event.data;
+    const reference = data.reference;
+    const amount = data.amount / 100; // Convert kobo back to Naira
+    const customerEmail = data.customer?.email;
+    const customerPhone = data.metadata?.customer_phone;
+
+    console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref: ${reference})`);
+
+    try {
+      // 1. Save paid order directly into Supabase
+      const { error } = await supabase
+        .from('orders')
+        .insert([
+          {
+            reference: reference,
+            customer_phone: customerPhone || 'Unknown',
+            amount: amount,
+            email: customerEmail
+          }
+        ]);
+
+      if (error) {
+        console.error('❌ Error saving paid order to Supabase:', error.message);
+      } else {
+        console.log('✅ Paid order successfully logged in Supabase!');
+      }
+
+      // 2. Send instant WhatsApp receipt if customer phone exists
+      if (customerPhone) {
+        const receiptMessage = `🎉 *Payment Received!* \n\nThank you for your payment of *₦${amount.toLocaleString()}*. Your order has been confirmed and is being prepared right away! 🍲✨`;
+        
+        await sendWhatsAppMessage(customerPhone, receiptMessage);
+        await saveChatMessage(customerPhone, 'model', receiptMessage);
+      }
+
+    } catch (err) {
+      console.error('❌ Error in Paystack webhook processing:', err);
+    }
+  }
 });
 
 // Health check route for UptimeRobot
