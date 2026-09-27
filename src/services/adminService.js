@@ -5,7 +5,7 @@ import { sendWhatsAppMessage } from './whatsappService.js';
 const ADMIN_PHONE = (process.env.KITCHEN_PHONE_NUMBER || '').replace(/\D/g, '');
 
 export async function handleAdminCommand(senderNumber, incomingText, rawMessageData) {
-  // Clean incoming sender number (e.g. "2348138412871@s.whatsapp.net" or "2348138412871:12@s.whatsapp.net")
+  // Clean incoming sender number
   const cleanSender = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
 
   // If message is not from the authorized admin phone, pass it to customer AI
@@ -17,7 +17,7 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
 
   // 1. Trigger Main Admin Menu
   if (incomingText.toLowerCase() === '!admin') {
-    await sendAdminMainMenu(senderNumber);
+    await sendAdminMainMenu(cleanSender); // Pass the cleaned number
     return true; 
   }
 
@@ -35,7 +35,7 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
   }
 
   if (incomingText === 'CMD_SHOW_SOLDOUT_LIST') {
-    await sendSoldOutSelectionList(senderNumber);
+    await sendSoldOutSelectionList(cleanSender); // Pass the cleaned number
     return true;
   }
 
@@ -55,15 +55,17 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
 }
 
 // Helper: Send Main Menu via Evolution API
-async function sendAdminMainMenu(to) {
+async function sendAdminMainMenu(cleanPhone) {
   const evolutionApiUrl = process.env.EVOLUTION_API_URL;
-  const instanceName = process.env.EVOLUTION_INSTANCE_NAME; // Matches Render key EVOLUTION_INSTANCE_NAME
+  const instanceName = process.env.EVOLUTION_INSTANCE_NAME; 
   const apiKey = process.env.EVOLUTION_API_KEY;
 
   const listPayload = {
-    number: to,
+    number: cleanPhone,
     title: "🛠️ ESTHY'S KITCHEN ADMIN",
-    description: "Select an operation below. No typing required.",
+    text: "Select an operation below. No typing required.", // FIXED: Evolution requires a 'text' body
+    footerText: "System Admin", // FIXED: Added footer text
+    description: "Admin Management Menu",
     buttonText: "Admin Menu",
     sections: [
       {
@@ -93,14 +95,20 @@ async function sendAdminMainMenu(to) {
     });
     
     const responseData = await res.json();
-    console.log('📲 Admin List API response:', responseData);
+    
+    // Log detailed validation errors if it fails again
+    if (responseData.status === 400) {
+      console.error('❌ Validation Error Payload:', JSON.stringify(responseData.message || responseData.response));
+    } else {
+      console.log('📲 Admin List sent successfully!');
+    }
   } catch (err) {
     console.error('❌ Failed to send Admin List Menu:', err);
   }
 }
 
 // Helper: Send List of Available Items to Mark Sold Out
-async function sendSoldOutSelectionList(to) {
+async function sendSoldOutSelectionList(cleanPhone) {
   const evolutionApiUrl = process.env.EVOLUTION_API_URL;
   const instanceName = process.env.EVOLUTION_INSTANCE_NAME; 
   const apiKey = process.env.EVOLUTION_API_KEY;
@@ -108,7 +116,7 @@ async function sendSoldOutSelectionList(to) {
   const { data: menuItems } = await supabase.from('menu_items').select('*').eq('is_available', true);
   
   if (!menuItems || menuItems.length === 0) {
-    return sendWhatsAppMessage(to, 'All items are currently marked as sold out.');
+    return sendWhatsAppMessage(cleanPhone, 'All items are currently marked as sold out.');
   }
 
   const rows = menuItems.map(item => ({
@@ -118,19 +126,26 @@ async function sendSoldOutSelectionList(to) {
   }));
 
   const listPayload = {
-    number: to,
+    number: cleanPhone,
     title: "🚫 Mark as Sold Out",
-    description: "Select an item to remove from the live menu:",
+    text: "Select an item to remove from the live menu:", // FIXED: Added required text
+    footerText: "Menu Management", // FIXED: Added footer text
+    description: "Sold out items will be hidden.",
     buttonText: "Select Item",
     sections: [{ title: "Available Items", rows }]
   };
 
   try {
-    await fetch(`${evolutionApiUrl}/message/sendList/${instanceName}`, {
+    const res = await fetch(`${evolutionApiUrl}/message/sendList/${instanceName}`, {
       method: 'POST',
       headers: { 'apikey': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify(listPayload)
     });
+    
+    const responseData = await res.json();
+    if (responseData.status === 400) {
+      console.error('❌ Validation Error Payload:', JSON.stringify(responseData.message || responseData.response));
+    }
   } catch (err) {
     console.error('❌ Failed to send Sold Out List:', err);
   }
