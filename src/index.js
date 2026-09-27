@@ -21,7 +21,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'up', message: "Esthy's Spicy Kitchen Backend is running smoothly!" });
 });
 
-// WhatsApp Redirect Route (Brings users back to the native app after paying)
+// WhatsApp Redirect Route
 app.get('/payment-success', (req, res) => {
   const botPhone = req.query.phone || '2349117590168';
   res.send(`
@@ -40,9 +40,7 @@ app.get('/payment-success', (req, res) => {
         <p>Redirecting you back to your WhatsApp chat...</p>
         <div class="loader"></div>
         <script>
-          // Attempt native app deep link first
           window.location.href = "whatsapp://send?phone=${botPhone}";
-          // Fallback to standard web router if native fails
           setTimeout(() => { window.location.href = "https://wa.me/${botPhone}"; }, 2000);
         </script>
       </body>
@@ -50,7 +48,7 @@ app.get('/payment-success', (req, res) => {
   `);
 });
 
-// WhatsApp Webhook (Receives messages from Evolution API)
+// WhatsApp Webhook
 app.post('/webhook/whatsapp', async (req, res) => {
   res.status(200).send('EVENT_RECEIVED');
 
@@ -87,6 +85,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
           `${msg.role === 'user' ? 'Customer' : 'Assistant'}: ${msg.content}`
         ).join('\n');
 
+        // Added strict instruction for the AI to extract the address from history
         const fullUserPrompt = `
 Customer Phone: ${senderNumber}
 
@@ -97,6 +96,8 @@ Customer's New Message: "${textMessage}"
 
 Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
+
+CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE_LINK: <amount>] tag in this response, you MUST also output the customer's delivery address (extracted from the chat history) using the format [ADDRESS: <Full Delivery Address>]. If it is a pickup order, output [ADDRESS: Self-Pickup].
         `;
 
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
@@ -104,30 +105,36 @@ ${formattedMenu || 'EMPTY'}
         let aiResponse = await generateAIResponse(combinedPrompt);
 
         if (!aiResponse) return;
-
         if (aiResponse.trim() === 'IGNORE_MESSAGE') return;
 
-        // Strip out hallucinated markdown links (e.g. [Payment Link](https://checkout...))
         aiResponse = aiResponse.replace(/\[.*?\]\(https?:\/\/[^\s)]+\)/g, '').trim();
 
-        // 1. Extract JSON cart data if present (Cleaned up using cartParser)
+        // 1. Extract JSON cart data
         let parsedCartData = null;
         const cartDataMatch = aiResponse.match(/\[CART_DATA:\s*(\[.*?\])\]/s);
         
         if (cartDataMatch) {
           parsedCartData = parseCartData(cartDataMatch[1]);
-          // Remove the hidden tag from the final message sent to the user
           aiResponse = aiResponse.replace(cartDataMatch[0], '').trim();
         }
 
-        // 2. Extract payment link intent
+        // 2. Extract Delivery Address directly from AI's analysis
+        let deliveryAddress = "";
+        const addressMatch = aiResponse.match(/\[ADDRESS:\s*(.*?)\]/);
+        
+        if (addressMatch) {
+          deliveryAddress = addressMatch[1].trim();
+          aiResponse = aiResponse.replace(addressMatch[0], '').trim();
+        }
+
+        // 3. Extract payment link intent
         const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
 
         if (paymentMatch) {
           const amount = parseInt(paymentMatch[1], 10);
           
-          // Passing parsedCartData to your Paystack service so it can attach it to metadata
-          const paymentUrl = await generatePaymentLink(amount, senderNumber, parsedCartData);
+          // Passing parsedCartData AND deliveryAddress to Paystack service
+          const paymentUrl = await generatePaymentLink(amount, senderNumber, parsedCartData, deliveryAddress);
           
           if (paymentUrl) {
             aiResponse = aiResponse.replace(
@@ -165,52 +172,26 @@ app.post('/webhook/paystack', async (req, res) => {
     const customerEmail = data.customer?.email;
     const customerPhone = data.metadata?.customer_phone;
     
-    // Extract cart summary & optional metadata passed during payment link creation
     const cartSummary = data.metadata?.cart_data || []; 
+    
+    // We now solely rely on the metadata address attached during link generation
     let deliveryAddress = data.metadata?.delivery_address;
 
-    // --- SMART ADDRESS FALLBACK LAYER ---
-    // If metadata lacks the address, pull last user message from chat logs
-    if ((!deliveryAddress || deliveryAddress === 'Address provided in chat') && customerPhone) {
-      try {
-        const { data: lastUserMsg } = await supabase
-          .from('chat_history')
-          .select('content')
-          .eq('phone_number', customerPhone)
-          .eq('role', 'user')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single();
-
-        if (lastUserMsg && lastUserMsg.content) {
-          deliveryAddress = lastUserMsg.content;
-        }
-      } catch (err) {
-        console.warn('⚠️ Could not fetch fallback address from chat history:', err.message);
-      }
+    if (!deliveryAddress || deliveryAddress.toLowerCase() === 'none') {
+       deliveryAddress = 'Not provided';
     }
-    // ------------------------------------
 
-    const isPickup = data.metadata?.is_pickup || (!deliveryAddress && !cartSummary.some(i => i.item_name.toLowerCase().includes('delivery')));
+    const isPickup = data.metadata?.is_pickup || 
+                     (!deliveryAddress && !cartSummary.some(i => i.item_name.toLowerCase().includes('delivery'))) ||
+                     deliveryAddress.toLowerCase().includes('pickup');
 
     console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref: ${reference})`);
 
-    const orderData = {
-      reference,
-      customerPhone,
-      amount,
-      customerEmail
-    };
+    const orderData = { reference, customerPhone, amount, customerEmail };
 
-    // 1. Save cleaned order to Supabase
     const result = await createCompleteOrder(orderData, cartSummary);
+    if (!result.success) return;
 
-    if (!result.success) {
-      console.error('❌ Database insertion failed, halting receipt dispatch.');
-      return;
-    }
-
-    // 2. Send Receipt to Customer
     if (customerPhone) {
       const receiptMessage = `✅ *SYSTEM ALERT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
       
@@ -222,10 +203,8 @@ app.post('/webhook/paystack', async (req, res) => {
       }
     }
 
-    // 3. Send Instant Order Alert to Kitchen / Manager
     const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
     if (kitchenPhone) {
-      // Filter out delivery fee line so kitchen only sees food to cook
       const foodItemsToPrepare = cartSummary
         .filter(item => !item.item_name.toLowerCase().includes('delivery'))
         .map(item => `• *${item.quantity}x* ${item.item_name}`)
@@ -234,7 +213,7 @@ app.post('/webhook/paystack', async (req, res) => {
       const fulfillmentTypeHeader = isPickup ? '🛍️ *SELF-PICKUP*' : '🚚 *DELIVERY ORDER*';
       const addressDisplay = isPickup 
         ? '📍 *Fulfillment:* Customer will pick up at restaurant' 
-        : `📍 *Delivery Address:* ${deliveryAddress || 'Not provided'}`;
+        : `📍 *Delivery Address:* ${deliveryAddress}`;
 
       const kitchenAlert = 
 `👨‍🍳 *NEW PAID ORDER RECEIVED!*
