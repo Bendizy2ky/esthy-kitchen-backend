@@ -1,33 +1,36 @@
 import { supabase } from '../config/supabase.js';
-import { sendWhatsAppMessage } from './whatsappService.js'; // Assuming this exists to send normal text
-// Note: You will need to add a function in whatsappService to send List Messages based on Evolution API docs.
+import { sendWhatsAppMessage } from './whatsappService.js';
 
-const ADMIN_PHONE = process.env.KITCHEN_PHONE_NUMBER?.replace(/[^0-9]/g, '');
+// Target kitchen/admin phone number
+const ADMIN_PHONE = (process.env.KITCHEN_PHONE_NUMBER || '').replace(/\D/g, '');
 
 export async function handleAdminCommand(senderNumber, incomingText, rawMessageData) {
-  const phone = senderNumber.replace(/[^0-9]/g, '');
-  if (phone !== ADMIN_PHONE) return false; // Not an admin, let AI handle it
+  // Clean incoming sender number (e.g. "2348138412871@s.whatsapp.net" or "2348138412871:12@s.whatsapp.net")
+  const cleanSender = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
 
-  // 1. Trigger Main Menu
+  // If message is not from the authorized admin phone, pass it to customer AI
+  if (cleanSender !== ADMIN_PHONE) {
+    return false; 
+  }
+
+  console.log(`🔑 Admin command received from ${cleanSender}: "${incomingText}"`);
+
+  // 1. Trigger Main Admin Menu
   if (incomingText.toLowerCase() === '!admin') {
     await sendAdminMainMenu(senderNumber);
     return true; 
   }
 
-  // 2. Handle Interactive List/Button Clicks
-  // Evolution API sends interactive responses in specific objects. 
-  // We check if the incoming text matches our predefined admin exact commands.
-  
+  // 2. Handle Interactive List Clicks
   if (incomingText === 'CMD_OPEN_KITCHEN') {
-    // Update store status in Supabase (assuming you have a store_status table)
-    await supabase.from('store_status').update({ is_open: true }).eq('id', 1);
-    await sendWhatsAppMessage(senderNumber, '✅ *Kitchen is now OPEN*. AI ordering is enabled.');
+    await supabase.from('store_status').upsert({ id: 1, is_open: true });
+    await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen is now OPEN*. AI customer ordering is enabled.');
     return true;
   }
 
   if (incomingText === 'CMD_CLOSE_KITCHEN') {
-    await supabase.from('store_status').update({ is_open: false }).eq('id', 1);
-    await sendWhatsAppMessage(senderNumber, '🛑 *Kitchen is now CLOSED*. AI ordering is paused.');
+    await supabase.from('store_status').upsert({ id: 1, is_open: false });
+    await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen is now CLOSED*. AI ordering is paused.');
     return true;
   }
 
@@ -36,21 +39,25 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
     return true;
   }
 
-  // 3. Handle Dynamic Item Selection (e.g., Admin clicked "Spicy Jollof Rice" to sell out)
   if (incomingText.startsWith('SOLDOUT_ITEM_')) {
-    const itemId = incomingText.split('_')[2];
-    await supabase.from('menu_items').update({ is_available: false }).eq('id', itemId);
-    await sendWhatsAppMessage(senderNumber, '🚫 Item marked as *Sold Out*.');
+    const itemId = incomingText.replace('SOLDOUT_ITEM_', '').trim();
+    const { error } = await supabase.from('menu_items').update({ is_available: false }).eq('id', itemId);
+    
+    if (error) {
+      await sendWhatsAppMessage(senderNumber, `❌ Error updating item: ${error.message}`);
+    } else {
+      await sendWhatsAppMessage(senderNumber, '🚫 Item has been marked as *Sold Out*.');
+    }
     return true;
   }
 
-  return false; // Not an admin command, return false so the AI workflow continues
+  return false;
 }
 
-// Helper to send the Main Menu List via Evolution API
+// Helper: Send Main Menu via Evolution API
 async function sendAdminMainMenu(to) {
   const evolutionApiUrl = process.env.EVOLUTION_API_URL;
-  const instanceName = process.env.EVOLUTION_INSTANCE;
+  const instanceName = process.env.EVOLUTION_INSTANCE_NAME; // Matches Render key EVOLUTION_INSTANCE_NAME
   const apiKey = process.env.EVOLUTION_API_KEY;
 
   const listPayload = {
@@ -69,45 +76,62 @@ async function sendAdminMainMenu(to) {
       {
         title: "Menu & Inventory",
         rows: [
-          { title: "Mark Item Sold Out", rowId: "CMD_SHOW_SOLDOUT_LIST", description: "Remove item from live menu" },
-          { title: "Restore Item", rowId: "CMD_SHOW_AVAILABLE_LIST", description: "Bring sold out item back" }
+          { title: "Mark Item Sold Out", rowId: "CMD_SHOW_SOLDOUT_LIST", description: "Remove item from live menu" }
         ]
       }
     ]
   };
 
-  await fetch(`${evolutionApiUrl}/message/sendList/${instanceName}`, {
-    method: 'POST',
-    headers: { 'apikey': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify(listPayload)
-  });
+  try {
+    const res = await fetch(`${evolutionApiUrl}/message/sendList/${instanceName}`, {
+      method: 'POST',
+      headers: { 
+        'apikey': apiKey, 
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify(listPayload)
+    });
+    
+    const responseData = await res.json();
+    console.log('📲 Admin List API response:', responseData);
+  } catch (err) {
+    console.error('❌ Failed to send Admin List Menu:', err);
+  }
 }
 
-// Helper to dynamically generate a list of items to mark as sold out
+// Helper: Send List of Available Items to Mark Sold Out
 async function sendSoldOutSelectionList(to) {
+  const evolutionApiUrl = process.env.EVOLUTION_API_URL;
+  const instanceName = process.env.EVOLUTION_INSTANCE_NAME; 
+  const apiKey = process.env.EVOLUTION_API_KEY;
+
   const { data: menuItems } = await supabase.from('menu_items').select('*').eq('is_available', true);
   
   if (!menuItems || menuItems.length === 0) {
-    return sendWhatsAppMessage(to, 'All items are currently sold out.');
+    return sendWhatsAppMessage(to, 'All items are currently marked as sold out.');
   }
 
   const rows = menuItems.map(item => ({
     title: item.name,
     rowId: `SOLDOUT_ITEM_${item.id}`,
-    description: `Current Price: ₦${item.price}`
+    description: `Current Price: ₦${Number(item.price).toLocaleString()}`
   }));
 
   const listPayload = {
     number: to,
     title: "🚫 Mark as Sold Out",
-    description: "Select the exact item to remove from the live menu:",
+    description: "Select an item to remove from the live menu:",
     buttonText: "Select Item",
-    sections: [{ title: "Available Items", rows: rows }]
+    sections: [{ title: "Available Items", rows }]
   };
 
-  await fetch(`${process.env.EVOLUTION_API_URL}/message/sendList/${process.env.EVOLUTION_INSTANCE}`, {
-    method: 'POST',
-    headers: { 'apikey': process.env.EVOLUTION_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify(listPayload)
-  });
+  try {
+    await fetch(`${evolutionApiUrl}/message/sendList/${instanceName}`, {
+      method: 'POST',
+      headers: { 'apikey': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify(listPayload)
+    });
+  } catch (err) {
+    console.error('❌ Failed to send Sold Out List:', err);
+  }
 }
