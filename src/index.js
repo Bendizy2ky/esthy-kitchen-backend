@@ -165,12 +165,13 @@ app.post('/webhook/paystack', async (req, res) => {
     const customerEmail = data.customer?.email;
     const customerPhone = data.metadata?.customer_phone;
     
-    // Retrieve the cart data passed from generatePaymentLink metadata
+    // Extract cart summary & optional metadata passed during payment link creation
     const cartSummary = data.metadata?.cart_data || []; 
+    const deliveryAddress = data.metadata?.delivery_address;
+    const isPickup = data.metadata?.is_pickup || (!deliveryAddress && !cartSummary.some(i => i.item_name.toLowerCase().includes('delivery')));
 
     console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref: ${reference})`);
 
-    // Prepare data payload for the order service
     const orderData = {
       reference,
       customerPhone,
@@ -178,23 +179,61 @@ app.post('/webhook/paystack', async (req, res) => {
       customerEmail
     };
 
-    // Use the clean order service to handle all database inserts safely
+    // 1. Save cleaned order to Supabase
     const result = await createCompleteOrder(orderData, cartSummary);
 
     if (!result.success) {
       console.error('❌ Database insertion failed, halting receipt dispatch.');
-      return; // Halt execution if main order fails so customer isn't falsely notified
+      return;
     }
 
-    // Send the WhatsApp receipt
+    // 2. Send Receipt to Customer
     if (customerPhone) {
-      const receiptMessage = `✅ *SYSTEM ALERTT: Payment Confirmed!*\n\nAmount: ₦${amount}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
+      const receiptMessage = `✅ *SYSTEM ALERT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
       
       try {
         await sendWhatsAppMessage(customerPhone, receiptMessage);
         await saveChatMessage(customerPhone, 'model', receiptMessage);
       } catch (err) {
         console.error('❌ Error sending WhatsApp receipt:', err);
+      }
+    }
+
+    // 3. Send Instant Order Alert to Kitchen / Manager
+    const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
+    if (kitchenPhone) {
+      // Filter out delivery fee line so kitchen only sees food to cook
+      const foodItemsToPrepare = cartSummary
+        .filter(item => !item.item_name.toLowerCase().includes('delivery'))
+        .map(item => `• *${item.quantity}x* ${item.item_name}`)
+        .join('\n');
+
+      const fulfillmentTypeHeader = isPickup ? '🛍️ *SELF-PICKUP*' : '🚚 *DELIVERY ORDER*';
+      const addressSection = isPickup 
+        ? '📍 *Fulfillment:* Customer will pick up at restaurant' 
+        : `📍 *Delivery Address:* ${deliveryAddress || 'Address provided in chat'}`;
+
+      const kitchenAlert = 
+`👨‍🍳 *NEW PAID ORDER RECEIVED!*
+-----------------------------------
+${fulfillmentTypeHeader}
+*Ref:* ${reference}
+*Customer Phone:* wa.me/${customerPhone?.replace(/[^0-9]/g, '')} (${customerPhone})
+
+${addressSection}
+
+🍲 *ITEMS TO PREPARE:*
+${foodItemsToPrepare || '• See order reference in DB'}
+
+💰 *Total Paid:* ₦${amount.toLocaleString()}
+-----------------------------------
+🔥 *Status:* Payment Verified. Start preparation!`;
+
+      try {
+        await sendWhatsAppMessage(kitchenPhone, kitchenAlert);
+        console.log(`📲 Kitchen notification sent to ${kitchenPhone}`);
+      } catch (err) {
+        console.error('❌ Error sending kitchen notification:', err);
       }
     }
   }
