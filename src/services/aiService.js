@@ -88,29 +88,40 @@ When a customer is ready to complete an order, ask ONLY for their delivery addre
 DO NOT ask the customer for their phone number. Their WhatsApp phone number is already provided in the input context as customer_phone.
 Automatically pass customer_phone directly into the create_paystack_checkout tool when creating the checkout link.`;
 
+// Fallback pool of active Gemini models (Ordered from primary to fallbacks)
+const FALLBACK_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash'
+];
+
 export async function generateAIResponse(promptContext) {
-  const model = genAI.getGenerativeModel({ 
-    model: 'gemini-3.8-flash', // Stable, fast, free-tier model
-    systemInstruction: SYSTEM_PROMPT 
-  });
+  const RETRY_DELAY_MS = 1500; // 1.5 seconds delay between model fallbacks
 
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 1500; // 1.5 seconds delay between retries
-
-  // Attempt to call the API, with automatic retry on failure
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  // Iterate through the fallback pool, switching models automatically on failure
+  for (let i = 0; i < FALLBACK_MODELS.length; i++) {
+    const currentModelName = FALLBACK_MODELS[i];
+    
     try {
+      const model = genAI.getGenerativeModel({ 
+        model: currentModelName, 
+        systemInstruction: SYSTEM_PROMPT 
+      });
+
       const result = await model.generateContent(promptContext);
       return result.response.text();
-    } catch (error) {
-      console.error(`⚠️ Gemini API Error (Attempt ${attempt}/${MAX_RETRIES}):`, error.message);
       
-      // If we have reached the maximum number of retries, throw the error to be handled by index.js
-      if (attempt === MAX_RETRIES) {
-        throw error;
+    } catch (error) {
+      console.warn(`⚠️ Gemini API Error on ${currentModelName} (Attempt ${i + 1}/${FALLBACK_MODELS.length}):`, error.message);
+      
+      // If we have exhausted the last model in the array, throw the error back to index.js
+      if (i === FALLBACK_MODELS.length - 1) {
+        throw new Error(`All Gemini fallback models exhausted or rate-limited. Last error: ${error.message}`);
       }
       
-      // Wait for RETRY_DELAY_MS before trying again (avoids 503 and 429 rate limit errors)
+      // Wait briefly before falling back to the next model to let API spikes settle
       await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
     }
   }
