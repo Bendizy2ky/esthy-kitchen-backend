@@ -137,6 +137,7 @@ ${formattedMenu || 'EMPTY'}
 });
 
 // Paystack Webhook (The absolute Source of Truth for Payments)
+// Paystack Webhook (The absolute Source of Truth for Payments)
 app.post('/webhook/paystack', async (req, res) => {
   res.status(200).send('Webhook received');
 
@@ -161,11 +162,15 @@ app.post('/webhook/paystack', async (req, res) => {
             email: customerEmail
         }]);
 
-      if (error) console.error('❌ Error saving paid order:', error.message);
+      // 1. If Supabase fails, log it and STOP execution
+      if (error) {
+        console.error('❌ Supabase RLS/Insert Error:', error.message);
+        return; // Halt execution so the WhatsApp receipt doesn't send
+      }
 
+      // 2. If Supabase succeeds, THEN send the WhatsApp receipt
       if (customerPhone) {
-        // AUTOMATED SYSTEM RECEIPT
-        const receiptMessage = `✅ *SYSTEM ALERTT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
+        const receiptMessage = `✅ *SYSTEM ALERTT: Payment Confirmed!*\n\nAmount: ₦${amount}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
         
         await sendWhatsAppMessage(customerPhone, receiptMessage);
         await saveChatMessage(customerPhone, 'model', receiptMessage);
