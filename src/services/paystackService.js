@@ -1,7 +1,8 @@
-export async function generatePaymentLink(amountInNaira, customerPhone, email = "orders@esthyskitchen.com") {
+// src/services/paystackService.js
+export async function generatePaymentLink(amountInNaira, customerPhone, cartData = null, email = "orders@esthyskitchen.com") {
   const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
   const botWhatsappNumber = process.env.BOT_WHATSAPP_NUMBER || "2349117590168"; 
-  const serverUrl = process.env.SERVER_URL; // e.g., https://evolution-api-wp6l.onrender.com
+  const serverUrl = process.env.SERVER_URL; // e.g., https://esthy-kitchen-backend.onrender.com
 
   if (!paystackSecretKey) {
     console.error('PAYSTACK_SECRET_KEY is missing.');
@@ -24,7 +25,8 @@ export async function generatePaymentLink(amountInNaira, customerPhone, email = 
         // Valid HTTPS redirect back to our server, which will then push them to WhatsApp
         callback_url: `${serverUrl}/payment-success?phone=${botWhatsappNumber}`,
         metadata: {
-          customer_phone: customerPhone
+          customer_phone: customerPhone,
+          cart_data: cartData
         }
       })
     });

@@ -1,3 +1,4 @@
+// index.js
 import express from 'express';
 import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
@@ -5,6 +6,8 @@ import { generateAIResponse, SYSTEM_PROMPT } from './services/aiService.js';
 import { sendWhatsAppMessage } from './services/whatsappService.js';
 import { getChatHistory, saveChatMessage } from './services/chatService.js';
 import { generatePaymentLink } from './services/paystackService.js';
+import { createCompleteOrder } from './services/orderService.js';
+import { parseCartData } from './utils/cartParser.js';
 
 dotenv.config();
 
@@ -107,11 +110,24 @@ ${formattedMenu || 'EMPTY'}
         // Strip out hallucinated markdown links (e.g. [Payment Link](https://checkout...))
         aiResponse = aiResponse.replace(/\[.*?\]\(https?:\/\/[^\s)]+\)/g, '').trim();
 
+        // 1. Extract JSON cart data if present (Cleaned up using cartParser)
+        let parsedCartData = null;
+        const cartDataMatch = aiResponse.match(/\[CART_DATA:\s*(\[.*?\])\]/s);
+        
+        if (cartDataMatch) {
+          parsedCartData = parseCartData(cartDataMatch[1]);
+          // Remove the hidden tag from the final message sent to the user
+          aiResponse = aiResponse.replace(cartDataMatch[0], '').trim();
+        }
+
+        // 2. Extract payment link intent
         const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
 
         if (paymentMatch) {
           const amount = parseInt(paymentMatch[1], 10);
-          const paymentUrl = await generatePaymentLink(amount, senderNumber);
+          
+          // Passing parsedCartData to your Paystack service so it can attach it to metadata
+          const paymentUrl = await generatePaymentLink(amount, senderNumber, parsedCartData);
           
           if (paymentUrl) {
             aiResponse = aiResponse.replace(
@@ -137,7 +153,6 @@ ${formattedMenu || 'EMPTY'}
 });
 
 // Paystack Webhook (The absolute Source of Truth for Payments)
-// Paystack Webhook (The absolute Source of Truth for Payments)
 app.post('/webhook/paystack', async (req, res) => {
   res.status(200).send('Webhook received');
 
@@ -149,34 +164,38 @@ app.post('/webhook/paystack', async (req, res) => {
     const amount = data.amount / 100;
     const customerEmail = data.customer?.email;
     const customerPhone = data.metadata?.customer_phone;
+    
+    // Retrieve the cart data passed from generatePaymentLink metadata
+    const cartSummary = data.metadata?.cart_data || []; 
 
     console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref: ${reference})`);
 
-    try {
-      const { error } = await supabase
-        .from('orders')
-        .insert([{
-            reference: reference,
-            customer_phone: customerPhone || 'Unknown',
-            amount: amount,
-            email: customerEmail
-        }]);
+    // Prepare data payload for the order service
+    const orderData = {
+      reference,
+      customerPhone,
+      amount,
+      customerEmail
+    };
 
-      // 1. If Supabase fails, log it and STOP execution
-      if (error) {
-        console.error('❌ Supabase RLS/Insert Error:', error.message);
-        return; // Halt execution so the WhatsApp receipt doesn't send
-      }
+    // Use the clean order service to handle all database inserts safely
+    const result = await createCompleteOrder(orderData, cartSummary);
 
-      // 2. If Supabase succeeds, THEN send the WhatsApp receipt
-      if (customerPhone) {
-        const receiptMessage = `✅ *SYSTEM ALERTT: Payment Confirmed!*\n\nAmount: ₦${amount}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
-        
+    if (!result.success) {
+      console.error('❌ Database insertion failed, halting receipt dispatch.');
+      return; // Halt execution if main order fails so customer isn't falsely notified
+    }
+
+    // Send the WhatsApp receipt
+    if (customerPhone) {
+      const receiptMessage = `✅ *SYSTEM ALERTT: Payment Confirmed!*\n\nAmount: ₦${amount}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
+      
+      try {
         await sendWhatsAppMessage(customerPhone, receiptMessage);
         await saveChatMessage(customerPhone, 'model', receiptMessage);
+      } catch (err) {
+        console.error('❌ Error sending WhatsApp receipt:', err);
       }
-    } catch (err) {
-      console.error('❌ Error in Paystack webhook processing:', err);
     }
   }
 });

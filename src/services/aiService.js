@@ -1,3 +1,4 @@
+// src/services/aiService.js
 import Groq from 'groq-sdk';
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -42,14 +43,19 @@ RULES & INTENT HANDLING:
      d. Present the FINAL ORDER CONFIRMATION combining the saved cart items, total price, and delivery address.
      e. Proceed directly to requesting payment confirmation.
 
-6. PAYMENT LINK GENERATION (CRITICAL):
-   - When the customer confirms their final order and total amount, and agrees to proceed to payment, you MUST append the exact tag [GENERATE_LINK: <amount>] at the very end of your response.
-   - Replace <amount> with the final numeric total in Naira. Do NOT use commas or currency symbols inside the bracket (e.g., [GENERATE_LINK: 35000]).
+6. PAYMENT LINK & CART DATA GENERATION (CRITICAL):
+   - When the customer confirms their final order and total amount, and agrees to proceed to payment, you MUST append TWO exact tags at the very end of your response:
+     1. [GENERATE_LINK: <amount>] (Replace <amount> with the final numeric total in Naira).
+     2. [CART_DATA: <json_array>] (A strict JSON array containing the exact items ordered).
+   - The JSON array MUST have EXACTLY these keys: "item_name" (string), "quantity" (integer), and "unit_price" (number). Do not include any other text inside the CART_DATA brackets.
+   - Example Output at the end of your message:
+     [GENERATE_LINK: 6000]
+     [CART_DATA: [{"item_name": "Smokey Jollof Rice", "quantity": 2, "unit_price": 2500}, {"item_name": "Delivery Fee", "quantity": 1, "unit_price": 1000}]]
 
-7.   CRITICAL PAYMENT LINK RULES:
-   - When presenting the final order summary, ONLY ask the user to confirm (e.g., "Please confirm if you want to proceed"). DO NOT output the [GENERATE_LINK: amount] tag at this stage.
-   - ONLY output the [GENERATE_LINK: amount] tag AFTER the customer explicitly replies with "yes", "proceed", or confirms they are ready to pay.
-   - When you do output the [GENERATE_LINK: amount] tag, DO NOT say phrases like "I will generate a link for you" or "Here is your link". Just say "Great! Please complete your payment below:" and output the tag. The system will automatically inject the link.
+7. CRITICAL PAYMENT LINK RULES:
+   - When presenting the final order summary, ONLY ask the user to confirm (e.g., "Please confirm if you want to proceed"). DO NOT output the tags at this stage.
+   - ONLY output the tags AFTER the customer explicitly replies with "yes", "proceed", or confirms they are ready to pay.
+   - When you do output the tags, DO NOT say phrases like "I will generate a link for you" or "Here is your link". Just say "Great! Please complete your payment below:" and output the tags. The system will automatically inject the link.
 
 ### STRICT MENU & PRICING CONSTRAINTS (ZERO HALLUCINATIONS)
 1. DATABASE GROUND TRUTH:
