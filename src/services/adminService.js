@@ -1,152 +1,122 @@
 import { supabase } from '../config/supabase.js';
-import { sendWhatsAppMessage } from './whatsappService.js';
+import { sendWhatsAppMessage } from './whatsappService.js'; 
 
-// Target kitchen/admin phone number
 const ADMIN_PHONE = (process.env.KITCHEN_PHONE_NUMBER || '').replace(/\D/g, '');
 
 export async function handleAdminCommand(senderNumber, incomingText, rawMessageData) {
-  // Clean incoming sender number
   const cleanSender = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
 
-  // If message is not from the authorized admin phone, pass it to customer AI
   if (cleanSender !== ADMIN_PHONE) {
     return false; 
   }
 
-  console.log(`🔑 Admin command received from ${cleanSender}: "${incomingText}"`);
+  const text = incomingText.trim().toLowerCase();
 
-  // 1. Trigger Main Admin Menu
-  if (incomingText.toLowerCase() === '!admin') {
-    await sendAdminMainMenu(cleanSender); // Pass the cleaned number
+  // 1. MAIN MENU
+  if (text === '!admin') {
+    const menuMessage = `🛠️ *ESTHY'S KITCHEN ADMIN* 🛠️\n\n` +
+      `Reply with any of these exact commands:\n\n` +
+      `🟢 *!open* - Enable AI ordering\n` +
+      `🔴 *!close* - Disable AI ordering\n` +
+      `🚫 *!soldout* - Hide items from the menu\n` +
+      `✅ *!restore* - Bring hidden items back`;
+      
+    await sendWhatsAppMessage(senderNumber, menuMessage);
     return true; 
   }
 
-  // 2. Handle Interactive List Clicks
-  if (incomingText === 'CMD_OPEN_KITCHEN') {
+  // 2. STORE TOGGLES
+  if (text === '!open') {
     await supabase.from('store_status').upsert({ id: 1, is_open: true });
     await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen is now OPEN*. AI customer ordering is enabled.');
     return true;
   }
 
-  if (incomingText === 'CMD_CLOSE_KITCHEN') {
+  if (text === '!close') {
     await supabase.from('store_status').upsert({ id: 1, is_open: false });
     await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen is now CLOSED*. AI ordering is paused.');
     return true;
   }
 
-  if (incomingText === 'CMD_SHOW_SOLDOUT_LIST') {
-    await sendSoldOutSelectionList(cleanSender); // Pass the cleaned number
+  // 3. SHOW ACTIVE ITEMS (TO MARK SOLD OUT)
+  if (text === '!soldout') {
+    const { data: menuItems } = await supabase.from('menu_items')
+      .select('*').eq('is_available', true).order('name');
+    
+    if (!menuItems || menuItems.length === 0) {
+      await sendWhatsAppMessage(senderNumber, 'All items are currently marked as sold out.');
+      return true;
+    }
+
+    let listText = `🚫 *MARK AS SOLD OUT*\nReply with the command to hide an item:\n\n`;
+    menuItems.forEach((item, index) => {
+      listText += `*!hide ${index + 1}* - ${item.name}\n`;
+    });
+
+    await sendWhatsAppMessage(senderNumber, listText);
     return true;
   }
 
-  if (incomingText.startsWith('SOLDOUT_ITEM_')) {
-    const itemId = incomingText.replace('SOLDOUT_ITEM_', '').trim();
-    const { error } = await supabase.from('menu_items').update({ is_available: false }).eq('id', itemId);
+  // 4. EXECUTE HIDE ITEM
+  if (text.startsWith('!hide ')) {
+    const itemNum = parseInt(text.replace('!hide ', '').trim(), 10);
+    if (isNaN(itemNum)) return true;
+
+    const { data: menuItems } = await supabase.from('menu_items')
+      .select('*').eq('is_available', true).order('name');
     
-    if (error) {
-      await sendWhatsAppMessage(senderNumber, `❌ Error updating item: ${error.message}`);
+    if (!menuItems || itemNum < 1 || itemNum > menuItems.length) return true;
+
+    const itemToHide = menuItems[itemNum - 1];
+    const { error } = await supabase.from('menu_items').update({ is_available: false }).eq('id', itemToHide.id);
+    
+    if (!error) {
+      await sendWhatsAppMessage(senderNumber, `🚫 *${itemToHide.name}* has been marked as Sold Out.`);
     } else {
-      await sendWhatsAppMessage(senderNumber, '🚫 Item has been marked as *Sold Out*.');
+      await sendWhatsAppMessage(senderNumber, `❌ Error: ${error.message}`);
+    }
+    return true;
+  }
+
+  // 5. SHOW HIDDEN ITEMS (TO RESTORE)
+  if (text === '!restore') {
+    const { data: menuItems } = await supabase.from('menu_items')
+      .select('*').eq('is_available', false).order('name');
+    
+    if (!menuItems || menuItems.length === 0) {
+      await sendWhatsAppMessage(senderNumber, '✅ All items are currently available on the menu.');
+      return true;
+    }
+
+    let listText = `✅ *RESTORE ITEM*\nReply with the command to make an item available again:\n\n`;
+    menuItems.forEach((item, index) => {
+      listText += `*!add ${index + 1}* - ${item.name}\n`;
+    });
+
+    await sendWhatsAppMessage(senderNumber, listText);
+    return true;
+  }
+
+  // 6. EXECUTE RESTORE ITEM
+  if (text.startsWith('!add ')) {
+    const itemNum = parseInt(text.replace('!add ', '').trim(), 10);
+    if (isNaN(itemNum)) return true;
+
+    const { data: menuItems } = await supabase.from('menu_items')
+      .select('*').eq('is_available', false).order('name');
+      
+    if (!menuItems || itemNum < 1 || itemNum > menuItems.length) return true;
+
+    const itemToAdd = menuItems[itemNum - 1];
+    const { error } = await supabase.from('menu_items').update({ is_available: true }).eq('id', itemToAdd.id);
+    
+    if (!error) {
+      await sendWhatsAppMessage(senderNumber, `✅ *${itemToAdd.name}* is now back on the live menu!`);
+    } else {
+      await sendWhatsAppMessage(senderNumber, `❌ Error: ${error.message}`);
     }
     return true;
   }
 
   return false;
-}
-
-// Helper: Send Main Menu via Evolution API
-async function sendAdminMainMenu(cleanPhone) {
-  const evolutionApiUrl = process.env.EVOLUTION_API_URL;
-  const instanceName = process.env.EVOLUTION_INSTANCE_NAME; 
-  const apiKey = process.env.EVOLUTION_API_KEY;
-
-  const listPayload = {
-    number: cleanPhone,
-    title: "🛠️ ESTHY'S KITCHEN ADMIN",
-    text: "Select an operation below. No typing required.", // FIXED: Evolution requires a 'text' body
-    footerText: "System Admin", // FIXED: Added footer text
-    description: "Admin Management Menu",
-    buttonText: "Admin Menu",
-    sections: [
-      {
-        title: "Store Control",
-        rows: [
-          { title: "Open Kitchen", rowId: "CMD_OPEN_KITCHEN", description: "Enable AI customer ordering" },
-          { title: "Close Kitchen", rowId: "CMD_CLOSE_KITCHEN", description: "Disable AI customer ordering" }
-        ]
-      },
-      {
-        title: "Menu & Inventory",
-        rows: [
-          { title: "Mark Item Sold Out", rowId: "CMD_SHOW_SOLDOUT_LIST", description: "Remove item from live menu" }
-        ]
-      }
-    ]
-  };
-
-  try {
-    const res = await fetch(`${evolutionApiUrl}/message/sendList/${instanceName}`, {
-      method: 'POST',
-      headers: { 
-        'apikey': apiKey, 
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify(listPayload)
-    });
-    
-    const responseData = await res.json();
-    
-    // Log detailed validation errors if it fails again
-    if (responseData.status === 400) {
-      console.error('❌ Validation Error Payload:', JSON.stringify(responseData.message || responseData.response));
-    } else {
-      console.log('📲 Admin List sent successfully!');
-    }
-  } catch (err) {
-    console.error('❌ Failed to send Admin List Menu:', err);
-  }
-}
-
-// Helper: Send List of Available Items to Mark Sold Out
-async function sendSoldOutSelectionList(cleanPhone) {
-  const evolutionApiUrl = process.env.EVOLUTION_API_URL;
-  const instanceName = process.env.EVOLUTION_INSTANCE_NAME; 
-  const apiKey = process.env.EVOLUTION_API_KEY;
-
-  const { data: menuItems } = await supabase.from('menu_items').select('*').eq('is_available', true);
-  
-  if (!menuItems || menuItems.length === 0) {
-    return sendWhatsAppMessage(cleanPhone, 'All items are currently marked as sold out.');
-  }
-
-  const rows = menuItems.map(item => ({
-    title: item.name,
-    rowId: `SOLDOUT_ITEM_${item.id}`,
-    description: `Current Price: ₦${Number(item.price).toLocaleString()}`
-  }));
-
-  const listPayload = {
-    number: cleanPhone,
-    title: "🚫 Mark as Sold Out",
-    text: "Select an item to remove from the live menu:", // FIXED: Added required text
-    footerText: "Menu Management", // FIXED: Added footer text
-    description: "Sold out items will be hidden.",
-    buttonText: "Select Item",
-    sections: [{ title: "Available Items", rows }]
-  };
-
-  try {
-    const res = await fetch(`${evolutionApiUrl}/message/sendList/${instanceName}`, {
-      method: 'POST',
-      headers: { 'apikey': apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify(listPayload)
-    });
-    
-    const responseData = await res.json();
-    if (responseData.status === 400) {
-      console.error('❌ Validation Error Payload:', JSON.stringify(responseData.message || responseData.response));
-    }
-  } catch (err) {
-    console.error('❌ Failed to send Sold Out List:', err);
-  }
 }
