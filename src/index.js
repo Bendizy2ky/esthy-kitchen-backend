@@ -8,6 +8,7 @@ import { getChatHistory, saveChatMessage } from './services/chatService.js';
 import { generatePaymentLink } from './services/paystackService.js';
 import { createCompleteOrder } from './services/orderService.js';
 import { parseCartData } from './utils/cartParser.js';
+import { handleAdminCommand } from './services/adminService.js'; // <-- ADDED ADMIN IMPORT
 
 dotenv.config();
 
@@ -59,12 +60,26 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const senderNumber = messageData.key?.remoteJid;
     const isFromMe = messageData.key?.fromMe;
     
-    const textMessage = 
+    // ---> MODIFIED: Extract text from either normal message OR an Interactive List reply
+    let textMessage = 
       messageData.message?.conversation || 
       messageData.message?.extendedTextMessage?.text;
 
+    // EVOLUTION API LIST RESPONSE EXTRACTION
+    if (messageData.message?.listResponseMessage) {
+      textMessage = messageData.message.listResponseMessage.singleSelectReply.selectedRowId;
+    }
+
     if (!isFromMe && textMessage && senderNumber !== 'status@broadcast') {
-      console.log(`💬 Received message from ${senderNumber}: ${textMessage}`);
+      
+      // ---> NEW: CHECK FOR ADMIN COMMANDS FIRST
+      const isAdminHandled = await handleAdminCommand(senderNumber, textMessage, messageData);
+      
+      // If the admin service handled it, stop execution here. Do not trigger AI.
+      if (isAdminHandled) return; 
+
+      // NORMAL CUSTOMER AI FLOW BEGINS HERE
+      console.log(`💬 Received customer message from ${senderNumber}: ${textMessage}`);
       
       try {
         await saveChatMessage(senderNumber, 'user', textMessage);
