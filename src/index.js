@@ -70,29 +70,23 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const senderNumber = messageData.key?.remoteJid;
     const isFromMe = messageData.key?.fromMe;
     
-    // Extract text from either normal message OR an Interactive List reply
     let textMessage = 
       messageData.message?.conversation || 
       messageData.message?.extendedTextMessage?.text;
 
-    // EVOLUTION API LIST RESPONSE EXTRACTION
     if (messageData.message?.listResponseMessage) {
       textMessage = messageData.message.listResponseMessage.singleSelectReply.selectedRowId;
     }
 
     if (!isFromMe && textMessage && senderNumber !== 'status@broadcast') {
       
-      // 1. Check if it's an Admin Command FIRST
       const isAdminHandled = await handleAdminCommand(senderNumber, textMessage, messageData);
       
-      // If the admin service handled it, stop execution here. Do not trigger AI.
       if (isAdminHandled) return; 
 
-      // NORMAL CUSTOMER AI FLOW BEGINS HERE
       console.log(`💬 Received customer message from ${senderNumber}:${textMessage}`);
       
       try {
-        // 2. CHECK IF KITCHEN IS OPEN
         const { data: storeStatus, error: storeErr } = await supabase
           .from('store_status')
           .select('is_open')
@@ -107,7 +101,6 @@ app.post('/webhook/whatsapp', async (req, res) => {
           return;
         }
 
-        // 3. CHECK IF USER IS IN HUMAN MODE
         const { data: userState, error: userErr } = await supabase
           .from('user_states')
           .select('mode')
@@ -115,7 +108,6 @@ app.post('/webhook/whatsapp', async (req, res) => {
           .single();
 
         if (userErr && userErr.code !== 'PGRST116') { 
-          // Ignore PGRST116 (no rows found for new users)
           console.error('Supabase User State Error:', userErr.message);
         }
 
@@ -157,7 +149,6 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
 
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
 
-        // Call AI Provider with safety check
         let aiResponse = await generateAIResponse(combinedPrompt);
 
         if (!aiResponse) {
@@ -168,13 +159,44 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
 
         aiResponse = aiResponse.replace(/\[.*?\]\(https?:\/\/[^\s)]+\)/g, '').trim();
 
-        // 1. Extract JSON cart data
+        // 1. Extract JSON cart data and enforce Server-Side Price Verification
         let parsedCartData = null;
+        let secureTotalAmount = 0; // Holds the server-verified total
+        
         const cartDataMatch = aiResponse.match(/\[CART_DATA:\s*(\[.*?\])\]/s);
         
         if (cartDataMatch) {
           parsedCartData = parseCartData(cartDataMatch[1]);
           aiResponse = aiResponse.replace(cartDataMatch[0], '').trim();
+
+          // 🚨 SECURITY FIX #2: AI Prompt Injection Protection
+          // Cross-reference AI cart items with actual Supabase database prices
+          if (parsedCartData && parsedCartData.length > 0) {
+            parsedCartData = parsedCartData.map(item => {
+              // A. Handle Delivery Fees (Prevent negative fee injection)
+              if (item.item_name.toLowerCase().includes('delivery')) {
+                const safeFee = Math.max(0, Number(item.unit_price) || 0);
+                secureTotalAmount += (safeFee * item.quantity);
+                return { ...item, unit_price: safeFee };
+              }
+              
+              // B. Handle Food Items (Strictly use DB prices)
+              const dbItem = menuItems.find(mi => mi.name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
+              
+              if (dbItem) {
+                const truePrice = Number(dbItem.price);
+                const safeQty = Math.max(1, Number(item.quantity) || 1); // Prevent negative quantity injection
+                secureTotalAmount += (truePrice * safeQty);
+                return { ...item, unit_price: truePrice, quantity: safeQty, line_total: truePrice * safeQty };
+              } else {
+                console.warn(`🚨 SECURITY ALERT: Discarding invalid/fake cart item: ${item.item_name}`);
+                return { ...item, unit_price: 0, quantity: 0, line_total: 0 }; 
+              }
+            });
+            
+            // Filter out nullified items
+            parsedCartData = parsedCartData.filter(item => item.quantity > 0 || item.item_name.toLowerCase().includes('delivery'));
+          }
         }
 
         // 2. Extract Delivery Address
@@ -190,8 +212,10 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
         const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
 
         if (paymentMatch) {
-          const amount = parseInt(paymentMatch[1], 10);
-          const paymentUrl = await generatePaymentLink(amount, senderNumber, parsedCartData, deliveryAddress);
+          // OVERRIDE the AI's requested amount with our securely calculated backend total
+          const finalAmount = secureTotalAmount > 0 ? secureTotalAmount : parseInt(paymentMatch[1], 10);
+          
+          const paymentUrl = await generatePaymentLink(finalAmount, senderNumber, parsedCartData, deliveryAddress);
           
           if (paymentUrl) {
             aiResponse = aiResponse.replace(
@@ -201,7 +225,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           } else {
             aiResponse = aiResponse.replace(
               paymentMatch[0], 
-              `\nI'm currently unable to generate a payment link. Please manually transfer ₦${amount} to our bank account.`
+              `\nI'm currently unable to generate a payment link. Please manually transfer ₦${finalAmount} to our bank account.`
             );
           }
         }
@@ -214,15 +238,16 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
 
           const orderCode = generateShortOrderCode();
           const cartSummary = parsedCartData || [];
-          const totalAmount = cartSummary.reduce(
-            (sum, item) => sum + (item.unit_price * item.quantity),
-            0
-          );
+          
+          // Use our secure total for the database record
+          const finalAmount = secureTotalAmount > 0 
+            ? secureTotalAmount 
+            : cartSummary.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
 
           const { error: pendingOrderError } = await supabase.from('pending_orders').insert([{
             order_code: orderCode,
             customer_phone: senderNumber,
-            amount: totalAmount,
+            amount: finalAmount,
             cart_data: cartSummary,
             delivery_address: deliveryAddress
           }]);
@@ -240,7 +265,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
 -----------------------------------
 *Order Ref:* \`${orderCode}\`
 *Customer:* wa.me/${senderNumber.replace(/\D/g, '')} (${senderNumber})
-*Amount:* ₦${totalAmount.toLocaleString()}
+*Amount:* ₦${finalAmount.toLocaleString()}
 📍 *Address:* ${deliveryAddress || 'Not specified'}
 
 🍲 *ITEMS TO PREPARE:*
@@ -261,7 +286,6 @@ ${foodItems}
       } catch (error) {
         console.error('❌ Error processing AI workflow:', error.message);
         
-        // 1. SEND GRACEFUL FALLBACK TO CUSTOMER
         const fallbackMessage = "We are experiencing a brief network delay with our system. ⏳ A staff member has been notified and will be right with you!";
         
         try {
@@ -270,7 +294,6 @@ ${foodItems}
           console.error('❌ Failed to send customer fallback message:', sendErr.message);
         }
 
-        // 2. SEND REAL-TIME ALERT TO KITCHEN MANAGER / STAFF
         const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
         if (kitchenPhone) {
           const cleanCustomer = senderNumber.replace(/\D/g, '');
@@ -301,18 +324,15 @@ app.post('/webhook/paystack', async (req, res) => {
   const secret = process.env.PAYSTACK_SECRET_KEY;
   const paystackSignature = req.headers['x-paystack-signature'];
 
-  // 1. Create a hash of the incoming request body using your secret key
   const hash = crypto.createHmac('sha512', secret)
                      .update(JSON.stringify(req.body))
                      .digest('hex');
 
-  // 2. Block the request if the signatures do not match
   if (hash !== paystackSignature) {
     console.warn('🚨 SECURITY ALERT: Blocked an unauthorized webhook attempt!');
     return res.status(401).send('Unauthorized Request');
   }
 
-  // 3. Acknowledge receipt to Paystack immediately
   res.status(200).send('Webhook received');
 
   const event = req.body;
@@ -326,7 +346,6 @@ app.post('/webhook/paystack', async (req, res) => {
     
     const cartSummary = data.metadata?.cart_data || []; 
     
-    // We now solely rely on the metadata address attached during link generation
     let deliveryAddress = data.metadata?.delivery_address;
 
     if (!deliveryAddress || deliveryAddress.toLowerCase() === 'none') {
