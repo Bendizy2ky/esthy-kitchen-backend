@@ -1,3 +1,4 @@
+// src/services/adminService.js
 import { supabase } from '../config/supabase.js';
 import { sendWhatsAppMessage } from './whatsappService.js'; 
 
@@ -11,26 +12,52 @@ export async function handleAdminCommand(senderNumber, incomingText) {
 
   const args = incomingText.trim().split(' ');
   const command = args[0].toLowerCase();
-  const payload = args.slice(1).join(' '); // Everything after the command
+  const payload = args.slice(1).join(' ');
 
   // STORE CONTROL
   if (command === '!openkitchen') {
-    await supabase.from('store_status').upsert({ id: 1, is_open: true });
+    const { error } = await supabase
+      .from('store_status')
+      .upsert({ id: 1, is_open: true });
+
+    if (error) {
+      console.error('❌ Supabase Open Kitchen Error:', error.message);
+      await sendWhatsAppMessage(senderNumber, `❌ Failed to open kitchen: ${error.message}`);
+      return true;
+    }
+
     await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen OPEN*. AI ordering enabled.');
     return true;
   }
 
   if (command === '!closekitchen') {
-    await supabase.from('store_status').upsert({ id: 1, is_open: false });
+    const { error } = await supabase
+      .from('store_status')
+      .upsert({ id: 1, is_open: false });
+
+    if (error) {
+      console.error('❌ Supabase Close Kitchen Error:', error.message);
+      await sendWhatsAppMessage(senderNumber, `❌ Failed to close kitchen: ${error.message}`);
+      return true;
+    }
+
     await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen CLOSED*. AI ordering paused.');
     return true;
   }
 
   // MENU & STOCK
   if (command === '!soldout' && payload) {
-    const { data, error } = await supabase.from('menu_items')
-      .update({ is_available: false }).ilike('name', payload).select();
+    const { data, error } = await supabase
+      .from('menu_items')
+      .update({ is_available: false })
+      .ilike('name', payload)
+      .select();
     
+    if (error) {
+      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
+      return true;
+    }
+
     if (data && data.length > 0) {
       await sendWhatsAppMessage(senderNumber, `🚫 Marked *${data[0].name}* as sold out.`);
     } else {
@@ -40,8 +67,16 @@ export async function handleAdminCommand(senderNumber, incomingText) {
   }
 
   if (command === '!available' && payload) {
-    const { data, error } = await supabase.from('menu_items')
-      .update({ is_available: true }).ilike('name', payload).select();
+    const { data, error } = await supabase
+      .from('menu_items')
+      .update({ is_available: true })
+      .ilike('name', payload)
+      .select();
+
+    if (error) {
+      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
+      return true;
+    }
     
     if (data && data.length > 0) {
       await sendWhatsAppMessage(senderNumber, `✅ Restored *${data[0].name}* to available.`);
@@ -52,11 +87,17 @@ export async function handleAdminCommand(senderNumber, incomingText) {
   }
 
   if (['!deleteitem', '!delete_item', '!deletemenu', '!delete_menu'].includes(command) && payload) {
-    // Exact case match required for deletion as per operational rules
-    const { error, count } = await supabase.from('menu_items')
-      .delete({ count: 'exact' }).eq('name', payload);
+    const { error, count } = await supabase
+      .from('menu_items')
+      .delete({ count: 'exact' })
+      .eq('name', payload);
       
-    if (!error && count > 0) {
+    if (error) {
+      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
+      return true;
+    }
+
+    if (count > 0) {
       await sendWhatsAppMessage(senderNumber, `🗑️ Permanently deleted exact match: ${payload}`);
     } else {
       await sendWhatsAppMessage(senderNumber, `❌ Exact match not found for deletion: ${payload}`);
@@ -64,30 +105,34 @@ export async function handleAdminCommand(senderNumber, incomingText) {
     return true;
   }
 
-  if (command === '!menu' && payload) {
-    await sendWhatsAppMessage(senderNumber, `⚙️ Bulk menu updates for [${payload}] triggered (Database sync pending integration).`);
-    return true;
-  }
-
   // AGENT CONTROL
   if (['!human', '!pause'].includes(command) && payload) {
     const cleanCustomer = payload.replace(/\D/g, '');
-    await supabase.from('user_states').upsert({ phone: cleanCustomer, mode: 'human' });
+    const { error } = await supabase
+      .from('user_states')
+      .upsert({ phone: cleanCustomer, mode: 'human' });
+
+    if (error) {
+      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
+      return true;
+    }
+
     await sendWhatsAppMessage(senderNumber, `⏸️ AI paused for customer ${cleanCustomer}. You are now in manual control.`);
     return true;
   }
 
   if (['!bot', '!reset'].includes(command) && payload) {
     const cleanCustomer = payload.replace(/\D/g, '');
-    await supabase.from('user_states').upsert({ phone: cleanCustomer, mode: 'ai' });
-    await sendWhatsAppMessage(senderNumber, `▶️ AI resumed for customer ${cleanCustomer}.`);
-    return true;
-  }
+    const { error } = await supabase
+      .from('user_states')
+      .upsert({ phone: cleanCustomer, mode: 'ai' });
 
-  // FULFILLMENT
-  if (command === '!approve' && payload) {
-    const cleanId = payload.replace('-', '').toUpperCase();
-    await sendWhatsAppMessage(senderNumber, `✅ Order ${cleanId} approved. Generating receipt...`);
+    if (error) {
+      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
+      return true;
+    }
+
+    await sendWhatsAppMessage(senderNumber, `▶️ AI resumed for customer ${cleanCustomer}.`);
     return true;
   }
 
@@ -97,11 +142,9 @@ export async function handleAdminCommand(senderNumber, incomingText) {
       `*Store Control*\n` +
       `!openkitchen\n!closekitchen\n\n` +
       `*Menu & Stock*\n` +
-      `!soldout <Item>\n!available <Item>\n!deleteitem <Item>\n!menu <Items>\n\n` +
+      `!soldout <Item>\n!available <Item>\n!deleteitem <Item>\n\n` +
       `*Agent Control*\n` +
-      `!human <Phone>\n!bot <Phone>\n\n` +
-      `*Fulfillment*\n` +
-      `!approve <ID>`;
+      `!human <Phone>\n!bot <Phone>`;
     await sendWhatsAppMessage(senderNumber, menuMessage);
     return true;
   }
