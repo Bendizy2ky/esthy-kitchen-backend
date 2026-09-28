@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js';
 import { sendWhatsAppMessage } from './whatsappService.js';
-import { createCompleteOrder } from './orderService.js'; // your db save service
+import { createCompleteOrder } from './orderService.js';
 import { saveChatMessage } from './chatService.js';
 
 const ADMIN_PHONE = (process.env.KITCHEN_PHONE_NUMBER || '').replace(/\D/g, '');
@@ -15,75 +15,14 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
   const text = incomingText.trim();
   const lowerText = text.toLowerCase();
 
-  // 1. CONFIRM PENDING BANK TRANSFER
-  if (lowerText.startsWith('!confirm ')) {
-    const orderCode = text.substring(9).trim().toUpperCase();
-
-    // Fetch from pending_orders table
-    const { data: pending, error } = await supabase
-      .from('pending_orders')
-      .select('*')
-      .eq('order_code', orderCode)
-      .single();
-
-    if (error || !pending) {
-      await sendWhatsAppMessage(senderNumber, `❌ No pending order found with ref *${orderCode}*.`);
-      return true;
-    }
-
-    // A. Populates MAIN orders database table NOW
-    const orderPayload = {
-      reference: `BANK_${pending.order_code}`,
-      customerPhone: pending.customer_phone,
-      amount: pending.amount,
-      payment_method: 'bank_transfer'
-    };
-
-    const dbResult = await createCompleteOrder(orderPayload, pending.cart_data);
-
-    if (!dbResult.success) {
-      await sendWhatsAppMessage(senderNumber, `❌ Failed to save order to main DB: ${dbResult.error}`);
-      return true;
-    }
-
-    // B. Remove from pending_orders table
-    await supabase.from('pending_orders').delete().eq('order_code', orderCode);
-
-    // C. Send Official Order Confirmation to Customer
-    const customerSuccessMsg = 
-`✅ *PAYMENT CONFIRMED & ORDER PLACED!*
-
-*Order Ref:* ${pending.order_code}
-*Amount Paid:* ₦${pending.amount.toLocaleString()}
-
-Thank you! Your bank transfer has been manually verified by the kitchen manager. Your meal is now being prepared! 🍲🔥`;
-
-    await sendWhatsAppMessage(pending.customer_phone, customerSuccessMsg);
-    await saveChatMessage(pending.customer_phone, 'model', customerSuccessMsg);
-
-    // D. Confirm back to Manager
-    await sendWhatsAppMessage(senderNumber, `✅ Payment verified for *${pending.order_code}*! Order moved to main DB and customer notified.`);
-    return true;
-  }
-
-  // 2. VIEW ALL UNVERIFIED BANK TRANSFERS
-  if (lowerText === '!pending') {
-    const { data: list } = await supabase.from('pending_orders').select('*');
-
-    if (!list || list.length === 0) {
-      await sendWhatsAppMessage(senderNumber, '👌 No pending bank transfers awaiting verification.');
-      return true;
-    }
-
-    const itemsList = list.map(p => `• *${p.order_code}* | ₦${p.amount.toLocaleString()} | ${p.customer_phone}`).join('\n');
-    await sendWhatsAppMessage(senderNumber, `📋 *PENDING BANK TRANSFERS:* \n\n${itemsList}\n\n_Reply \`!confirm <code\` to approve._`);
-    return true;
-  }
-
   // 1. HELP MENU
   if (lowerText === '!admin') {
     const menuMessage = 
 `🛠️ *ESTHY'S KITCHEN ADMIN* 🛠️
+
+*Payment Verifications*
+• \`!pending\` - View unverified bank transfers
+• \`!confirm <OrderCode>\` - Approve bank transfer
 
 *Store Control*
 • \`!openkitchen\` - Enable AI customer ordering
@@ -99,13 +38,75 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
 • \`!human <Phone>\` - Pause AI for customer
 • \`!bot <Phone>\` - Resume AI for customer
 
-_Example:_ \`!price Jollof Rice | 4000\``;
+_Examples:_ 
+\`!confirm AYT45B\`
+\`!price Jollof Rice | 4000\``;
 
     await sendWhatsAppMessage(senderNumber, menuMessage);
     return true;
   }
 
-  // 2. STORE CONTROL
+  // 2. CONFIRM PENDING BANK TRANSFER
+  if (lowerText.startsWith('!confirm ')) {
+    const orderCode = text.substring(9).trim().toUpperCase();
+
+    const { data: pending, error } = await supabase
+      .from('pending_orders')
+      .select('*')
+      .eq('order_code', orderCode)
+      .single();
+
+    if (error || !pending) {
+      await sendWhatsAppMessage(senderNumber, `❌ No pending order found with ref *${orderCode}*.`);
+      return true;
+    }
+
+    const orderPayload = {
+      reference: `BANK_${pending.order_code}`,
+      customerPhone: pending.customer_phone,
+      amount: pending.amount,
+      payment_method: 'bank_transfer'
+    };
+
+    const dbResult = await createCompleteOrder(orderPayload, pending.cart_data);
+
+    if (!dbResult.success) {
+      await sendWhatsAppMessage(senderNumber, `❌ Failed to save order to main DB: ${dbResult.error}`);
+      return true;
+    }
+
+    await supabase.from('pending_orders').delete().eq('order_code', orderCode);
+
+    const customerSuccessMsg = 
+`✅ *PAYMENT CONFIRMED & ORDER PLACED!*
+
+*Order Ref:* ${pending.order_code}
+*Amount Paid:* ₦${pending.amount.toLocaleString()}
+
+Thank you! Your bank transfer has been manually verified by the kitchen manager. Your meal is now being prepared! 🍲🔥`;
+
+    await sendWhatsAppMessage(pending.customer_phone, customerSuccessMsg);
+    await saveChatMessage(pending.customer_phone, 'model', customerSuccessMsg);
+
+    await sendWhatsAppMessage(senderNumber, `✅ Payment verified for *${pending.order_code}*! Order moved to main DB and customer notified.`);
+    return true;
+  }
+
+  // 3. VIEW ALL UNVERIFIED BANK TRANSFERS
+  if (lowerText === '!pending') {
+    const { data: list } = await supabase.from('pending_orders').select('*');
+
+    if (!list || list.length === 0) {
+      await sendWhatsAppMessage(senderNumber, '👌 No pending bank transfers awaiting verification.');
+      return true;
+    }
+
+    const itemsList = list.map(p => `• *${p.order_code}* | ₦${p.amount.toLocaleString()} | ${p.customer_phone}`).join('\n');
+    await sendWhatsAppMessage(senderNumber, `📋 *PENDING BANK TRANSFERS:* \n\n${itemsList}\n\n_Reply \`!confirm <code\` to approve._`);
+    return true;
+  }
+
+  // 4. STORE CONTROL
   if (lowerText === '!openkitchen' || lowerText === '!open') {
     await supabase.from('store_status').upsert({ id: 1, is_open: true });
     await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen is now OPEN*. AI customer ordering enabled.');
@@ -118,7 +119,7 @@ _Example:_ \`!price Jollof Rice | 4000\``;
     return true;
   }
 
-  // 3. CHANGE ITEM PRICE (Preserves past order history)
+  // 5. CHANGE ITEM PRICE
   if (lowerText.startsWith('!price ')) {
     const payload = text.substring(7).trim();
     const parts = payload.split('|').map(p => p.trim());
@@ -150,7 +151,7 @@ _Example:_ \`!price Jollof Rice | 4000\``;
     return true;
   }
 
-  // 4. ADD NEW MENU ITEM
+  // 6. ADD NEW MENU ITEM
   if (lowerText.startsWith('!additem ')) {
     const payload = text.substring(9).trim();
     const parts = payload.split('|').map(p => p.trim());
@@ -180,7 +181,7 @@ _Example:_ \`!price Jollof Rice | 4000\``;
     return true;
   }
 
-  // 5. TOGGLE SOLDOUT (is_available = false)
+  // 7. TOGGLE SOLDOUT
   if (lowerText.startsWith('!soldout ')) {
     const itemName = text.substring(9).trim();
     const { data, error } = await supabase
@@ -197,7 +198,7 @@ _Example:_ \`!price Jollof Rice | 4000\``;
     return true;
   }
 
-  // 6. TOGGLE AVAILABLE (is_available = true)
+  // 8. TOGGLE AVAILABLE
   if (lowerText.startsWith('!available ')) {
     const itemName = text.substring(11).trim();
     const { data, error } = await supabase
@@ -211,6 +212,21 @@ _Example:_ \`!price Jollof Rice | 4000\``;
     } else {
       await sendWhatsAppMessage(senderNumber, `✅ *${data[0].name}* is back on the live menu.`);
     }
+    return true;
+  }
+
+  // 9. TOGGLE HUMAN / BOT MODE
+  if (lowerText.startsWith('!human ')) {
+    const targetPhone = text.substring(7).trim().replace(/\D/g, '');
+    await supabase.from('user_states').upsert({ phone: targetPhone, mode: 'human' });
+    await sendWhatsAppMessage(senderNumber, `👤 AI paused for user *${targetPhone}*. You can now chat directly.`);
+    return true;
+  }
+
+  if (lowerText.startsWith('!bot ')) {
+    const targetPhone = text.substring(5).trim().replace(/\D/g, '');
+    await supabase.from('user_states').upsert({ phone: targetPhone, mode: 'bot' });
+    await sendWhatsAppMessage(senderNumber, `🤖 AI resumed for user *${targetPhone}*.`);
     return true;
   }
 
