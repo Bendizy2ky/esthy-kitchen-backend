@@ -72,7 +72,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
     if (!isFromMe && textMessage && senderNumber !== 'status@broadcast') {
       
-      // ---> NEW: CHECK FOR ADMIN COMMANDS FIRST
+      // 1. Check if it's an Admin Command FIRST
       const isAdminHandled = await handleAdminCommand(senderNumber, textMessage, messageData);
       
       // If the admin service handled it, stop execution here. Do not trigger AI.
@@ -82,25 +82,30 @@ app.post('/webhook/whatsapp', async (req, res) => {
       console.log(`💬 Received customer message from ${senderNumber}: ${textMessage}`);
       
       try {
-        const { data: storeStatus, error: statusError } = await supabase
+        // 2. CHECK IF KITCHEN IS OPEN
+        const { data: storeStatus } = await supabase
           .from('store_status')
           .select('is_open')
           .eq('id', 1)
           .single();
 
+        // If the table says closed, block the AI and send a closed message
         if (storeStatus && storeStatus.is_open === false) {
-          const closedMsg = "So sorry, but Esthy's Spicy Kitchen is currently closed! 🛑 We aren't taking orders right now, but please check back during our opening hours.";
-          await sendWhatsAppMessage(senderNumber, closedMsg);
-          return;
+          const closedMessage = "So sorry, but Esthy's Spicy Kitchen is currently closed! 🛑 We aren't taking orders right now.";
+          await sendWhatsAppMessage(senderNumber, closedMessage);
+          return; // 🛑 Halts execution completely, preventing the AI from sending the menu
         }
 
+        // 3. CHECK IF USER IS IN HUMAN MODE
         const { data: userState } = await supabase
           .from('user_states')
           .select('mode')
-          .eq('phone', senderNumber)
+          .eq('phone', senderNumber.replace(/\D/g, ''))
           .single();
 
-        if (userState && userState.mode === 'human') return;
+        if (userState && userState.mode === 'human') {
+          return; // 🛑 Halts AI so the human manager can chat directly
+        }
 
         await saveChatMessage(senderNumber, 'user', textMessage);
 
