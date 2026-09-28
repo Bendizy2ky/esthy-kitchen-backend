@@ -8,7 +8,7 @@ import { getChatHistory, saveChatMessage } from './services/chatService.js';
 import { generatePaymentLink } from './services/paystackService.js';
 import { createCompleteOrder } from './services/orderService.js';
 import { parseCartData } from './utils/cartParser.js';
-import { handleAdminCommand } from './services/adminService.js'; // <-- ADDED ADMIN IMPORT
+import { handleAdminCommand } from './services/adminService.js';
 
 dotenv.config();
 
@@ -69,7 +69,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const senderNumber = messageData.key?.remoteJid;
     const isFromMe = messageData.key?.fromMe;
     
-    // ---> MODIFIED: Extract text from either normal message OR an Interactive List reply
+    // Extract text from either normal message OR an Interactive List reply
     let textMessage = 
       messageData.message?.conversation || 
       messageData.message?.extendedTextMessage?.text;
@@ -88,42 +88,48 @@ app.post('/webhook/whatsapp', async (req, res) => {
       if (isAdminHandled) return; 
 
       // NORMAL CUSTOMER AI FLOW BEGINS HERE
-      console.log(`💬 Received customer message from ${senderNumber}: ${textMessage}`);
+      console.log(`💬 Received customer message from ${senderNumber}:${textMessage}`);
       
       try {
         // 2. CHECK IF KITCHEN IS OPEN
-        const { data: storeStatus } = await supabase
+        const { data: storeStatus, error: storeErr } = await supabase
           .from('store_status')
           .select('is_open')
           .eq('id', 1)
           .single();
 
-        // If the table says closed, block the AI and send a closed message
+        if (storeErr) throw new Error(`Supabase Store Check Error: ${storeErr.message}`);
+
         if (storeStatus && storeStatus.is_open === false) {
           const closedMessage = "So sorry, but Esthy's Spicy Kitchen is currently closed! 🛑 We aren't taking orders right now.";
           await sendWhatsAppMessage(senderNumber, closedMessage);
-          return; // 🛑 Halts execution completely, preventing the AI from sending the menu
+          return;
         }
 
         // 3. CHECK IF USER IS IN HUMAN MODE
-        const { data: userState } = await supabase
+        const { data: userState, error: userErr } = await supabase
           .from('user_states')
           .select('mode')
           .eq('phone', senderNumber.replace(/\D/g, ''))
           .single();
 
+        if (userErr && userErr.code !== 'PGRST116') { 
+          // Ignore PGRST116 (no rows found for new users)
+          console.error('Supabase User State Error:', userErr.message);
+        }
+
         if (userState && userState.mode === 'human') {
-          return; // 🛑 Halts AI so the human manager can chat directly
+          return;
         }
 
         await saveChatMessage(senderNumber, 'user', textMessage);
 
-        const { data: menuItems, error } = await supabase
+        const { data: menuItems, error: menuErr } = await supabase
           .from('menu_items') 
           .select('*')
           .eq('is_available', true);
 
-        if (error) console.error('Error fetching menu from Supabase:', error);
+        if (menuErr) throw new Error(`Supabase Menu Fetch Error: ${menuErr.message}`);
 
         const formattedMenu = (menuItems || []).map(item => 
           `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}`
@@ -131,10 +137,9 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
         const history = await getChatHistory(senderNumber, 8);
         const historyText = history.map(msg => 
-          `${msg.role === 'user' ? 'Customer' : 'Assistant'}: ${msg.content}`
+          `${msg.role === 'user' ? 'Customer' : 'Assistant'}:${msg.content}`
         ).join('\n');
 
-        // Added strict instruction for the AI to extract the address from history
         const fullUserPrompt = `
 Customer Phone: ${senderNumber}
 
@@ -146,14 +151,18 @@ Customer's New Message: "${textMessage}"
 Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
 
-CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE_LINK: <amount>] tag in this response, you MUST also output the customer's delivery address (extracted from the chat history) using the format [ADDRESS: <Full Delivery Address>]. If it is a pickup order, output [ADDRESS: Self-Pickup].
+CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE_LINK: <amount>] or [BANK_TRANSFER_CLAIMED] tag in this response, you MUST also output the customer's delivery address (extracted from the chat history) using the format [ADDRESS: <Full Delivery Address>]. If it is a pickup order, output [ADDRESS: Self-Pickup].
         `;
 
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
 
+        // Call AI Provider with safety check
         let aiResponse = await generateAIResponse(combinedPrompt);
 
-        if (!aiResponse) return;
+        if (!aiResponse) {
+          throw new Error('Groq AI returned an empty response');
+        }
+
         if (aiResponse.trim() === 'IGNORE_MESSAGE') return;
 
         aiResponse = aiResponse.replace(/\[.*?\]\(https?:\/\/[^\s)]+\)/g, '').trim();
@@ -167,7 +176,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           aiResponse = aiResponse.replace(cartDataMatch[0], '').trim();
         }
 
-        // 2. Extract Delivery Address directly from AI's analysis
+        // 2. Extract Delivery Address
         let deliveryAddress = "";
         const addressMatch = aiResponse.match(/\[ADDRESS:\s*(.*?)\]/);
         
@@ -176,13 +185,11 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           aiResponse = aiResponse.replace(addressMatch[0], '').trim();
         }
 
-        // 3. Extract payment link intent
+        // 3. Handle Paystack Online Link
         const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
 
         if (paymentMatch) {
           const amount = parseInt(paymentMatch[1], 10);
-          
-          // Passing parsedCartData AND deliveryAddress to Paystack service
           const paymentUrl = await generatePaymentLink(amount, senderNumber, parsedCartData, deliveryAddress);
           
           if (paymentUrl) {
@@ -198,6 +205,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           }
         }
 
+        // 4. Handle Direct Bank Transfer Claimed
         if (aiResponse.includes('[BANK_TRANSFER_CLAIMED]')) {
           const cleanResponse = aiResponse.replace('[BANK_TRANSFER_CLAIMED]', '').trim();
           await sendWhatsAppMessage(senderNumber, cleanResponse);
@@ -214,7 +222,8 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
             order_code: orderCode,
             customer_phone: senderNumber,
             amount: totalAmount,
-            cart_data: cartSummary
+            cart_data: cartSummary,
+            delivery_address: deliveryAddress
           }]);
 
           if (pendingOrderError) {
@@ -225,12 +234,13 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
           if (kitchenPhone) {
             const foodItems = cartSummary.map(item => `• *${item.quantity}x* ${item.item_name}`).join('\n');
-            const managerAlert =
+            const managerAlert = 
 `🔔 *NEW BANK TRANSFER TO VERIFY!*
 -----------------------------------
 *Order Ref:* \`${orderCode}\`
 *Customer:* wa.me/${senderNumber.replace(/\D/g, '')} (${senderNumber})
 *Amount:* ₦${totalAmount.toLocaleString()}
+📍 *Address:* ${deliveryAddress || 'Not specified'}
 
 🍲 *ITEMS TO PREPARE:*
 ${foodItems}
@@ -248,7 +258,16 @@ ${foodItems}
         await saveChatMessage(senderNumber, 'model', aiResponse);
 
       } catch (error) {
-        console.error('❌ Error processing AI workflow:', error);
+        console.error('❌ Error processing AI workflow:', error.message);
+        
+        // GRACEFUL FALLBACK TO CUSTOMER
+        const fallbackMessage = "We are experiencing a brief network delay with our system. ⏳ A staff member has been notified and will be right with you!";
+        
+        try {
+          await sendWhatsAppMessage(senderNumber, fallbackMessage);
+        } catch (sendErr) {
+          console.error('❌ Failed to send fallback message:', sendErr.message);
+        }
       }
     }
   }
