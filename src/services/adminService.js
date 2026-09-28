@@ -1,5 +1,7 @@
 import { supabase } from '../config/supabase.js';
 import { sendWhatsAppMessage } from './whatsappService.js';
+import { createCompleteOrder } from './orderService.js'; // your db save service
+import { saveChatMessage } from './chatService.js';
 
 const ADMIN_PHONE = (process.env.KITCHEN_PHONE_NUMBER || '').replace(/\D/g, '');
 
@@ -12,6 +14,71 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
 
   const text = incomingText.trim();
   const lowerText = text.toLowerCase();
+
+  // 1. CONFIRM PENDING BANK TRANSFER
+  if (lowerText.startsWith('!confirm ')) {
+    const orderCode = text.substring(9).trim().toUpperCase();
+
+    // Fetch from pending_orders table
+    const { data: pending, error } = await supabase
+      .from('pending_orders')
+      .select('*')
+      .eq('order_code', orderCode)
+      .single();
+
+    if (error || !pending) {
+      await sendWhatsAppMessage(senderNumber, `❌ No pending order found with ref *${orderCode}*.`);
+      return true;
+    }
+
+    // A. Populates MAIN orders database table NOW
+    const orderPayload = {
+      reference: `BANK_${pending.order_code}`,
+      customerPhone: pending.customer_phone,
+      amount: pending.amount,
+      payment_method: 'bank_transfer'
+    };
+
+    const dbResult = await createCompleteOrder(orderPayload, pending.cart_data);
+
+    if (!dbResult.success) {
+      await sendWhatsAppMessage(senderNumber, `❌ Failed to save order to main DB: ${dbResult.error}`);
+      return true;
+    }
+
+    // B. Remove from pending_orders table
+    await supabase.from('pending_orders').delete().eq('order_code', orderCode);
+
+    // C. Send Official Order Confirmation to Customer
+    const customerSuccessMsg = 
+`✅ *PAYMENT CONFIRMED & ORDER PLACED!*
+
+*Order Ref:* ${pending.order_code}
+*Amount Paid:* ₦${pending.amount.toLocaleString()}
+
+Thank you! Your bank transfer has been manually verified by the kitchen manager. Your meal is now being prepared! 🍲🔥`;
+
+    await sendWhatsAppMessage(pending.customer_phone, customerSuccessMsg);
+    await saveChatMessage(pending.customer_phone, 'model', customerSuccessMsg);
+
+    // D. Confirm back to Manager
+    await sendWhatsAppMessage(senderNumber, `✅ Payment verified for *${pending.order_code}*! Order moved to main DB and customer notified.`);
+    return true;
+  }
+
+  // 2. VIEW ALL UNVERIFIED BANK TRANSFERS
+  if (lowerText === '!pending') {
+    const { data: list } = await supabase.from('pending_orders').select('*');
+
+    if (!list || list.length === 0) {
+      await sendWhatsAppMessage(senderNumber, '👌 No pending bank transfers awaiting verification.');
+      return true;
+    }
+
+    const itemsList = list.map(p => `• *${p.order_code}* | ₦${p.amount.toLocaleString()} | ${p.customer_phone}`).join('\n');
+    await sendWhatsAppMessage(senderNumber, `📋 *PENDING BANK TRANSFERS:* \n\n${itemsList}\n\n_Reply \`!confirm <code\` to approve._`);
+    return true;
+  }
 
   // 1. HELP MENU
   if (lowerText === '!admin') {

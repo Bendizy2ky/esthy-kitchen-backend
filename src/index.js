@@ -15,6 +15,15 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
+function generateShortOrderCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -187,6 +196,52 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
               `\nI'm currently unable to generate a payment link. Please manually transfer ₦${amount} to our bank account.`
             );
           }
+        }
+
+        if (aiResponse.includes('[BANK_TRANSFER_CLAIMED]')) {
+          const cleanResponse = aiResponse.replace('[BANK_TRANSFER_CLAIMED]', '').trim();
+          await sendWhatsAppMessage(senderNumber, cleanResponse);
+          await saveChatMessage(senderNumber, 'model', cleanResponse);
+
+          const orderCode = generateShortOrderCode();
+          const cartSummary = parsedCartData || [];
+          const totalAmount = cartSummary.reduce(
+            (sum, item) => sum + (item.unit_price * item.quantity),
+            0
+          );
+
+          const { error: pendingOrderError } = await supabase.from('pending_orders').insert([{
+            order_code: orderCode,
+            customer_phone: senderNumber,
+            amount: totalAmount,
+            cart_data: cartSummary
+          }]);
+
+          if (pendingOrderError) {
+            console.error('❌ Error saving pending order:', pendingOrderError);
+            return;
+          }
+
+          const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
+          if (kitchenPhone) {
+            const foodItems = cartSummary.map(item => `• *${item.quantity}x* ${item.item_name}`).join('\n');
+            const managerAlert =
+`🔔 *NEW BANK TRANSFER TO VERIFY!*
+-----------------------------------
+*Order Ref:* \`${orderCode}\`
+*Customer:* wa.me/${senderNumber.replace(/\D/g, '')} (${senderNumber})
+*Amount:* ₦${totalAmount.toLocaleString()}
+
+🍲 *ITEMS TO PREPARE:*
+${foodItems}
+
+-----------------------------------
+👉 *To confirm payment & dispatch order, reply:*
+\`!confirm ${orderCode}\``;
+
+            await sendWhatsAppMessage(kitchenPhone, managerAlert);
+          }
+          return;
         }
 
         await sendWhatsAppMessage(senderNumber, aiResponse);

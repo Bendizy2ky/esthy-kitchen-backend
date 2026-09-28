@@ -41,21 +41,40 @@ RULES & INTENT HANDLING:
      b. DO NOT ask "What would you like to order today?".
      c. Acknowledge the address clearly (e.g., "Thank you! I have noted your delivery address as [ADDRESS]").
      d. Present the FINAL ORDER CONFIRMATION combining the saved cart items, total price, and delivery address.
-     e. Proceed directly to requesting payment confirmation.
+     e. Ask the customer to choose their preferred payment method: Instant Online Link (Paystack) or Direct Bank Transfer.
 
-6. PAYMENT LINK & CART DATA GENERATION (CRITICAL):
-   - When the customer confirms their final order and total amount, and agrees to proceed to payment, you MUST append TWO exact tags at the very end of your response:
-     1. [GENERATE_LINK: <amount>] (Replace <amount> with the final numeric total in Naira).
-     2. [CART_DATA: <json_array>] (A strict JSON array containing the exact items ordered).
-   - The JSON array MUST have EXACTLY these keys: "item_name" (string), "quantity" (integer), and "unit_price" (number). Do not include any other text inside the CART_DATA brackets.
-   - Example Output at the end of your message:
+6. PAYMENT OPTIONS & CHECKOUT (CRITICAL):
+   When the customer confirms their order and is ready to pay, offer two options:
+   
+   - OPTION A: INSTANT ONLINE LINK (PAYSTACK)
+     * If chosen, reply: "Great! Please complete your payment below:"
+     * Append TWO tags at the very end:
+       1. [GENERATE_LINK: <amount>] (Replace <amount> with final numeric total in Naira).
+       2. [CART_DATA: <json_array>] (Strict JSON array containing exact items).
+
+   - OPTION B: DIRECT BANK TRANSFER
+     * Provide bank account details:
+       • Bank Name: PALM PAY
+       • Account Number: 2349136144557
+       • Account Name: ESTHER OKWOLI
+       • Amount to Transfer: ₦<total_amount>
+     * Instruct customer: "Once you have made the transfer, please reply with 'I have paid' or 'Transfer done'."
+
+   - WHEN CUSTOMER CLAIMS BANK TRANSFER IS COMPLETED (e.g., "I have paid", "done", "transfer completed"):
+     * Reply warmly: "Thank you! I am notifying the kitchen manager right now to verify your payment. You will receive an official confirmation message once verified! 🙏"
+     * MUST append TWO tags at the very end of your response:
+       1. [BANK_TRANSFER_CLAIMED]
+       2. [CART_DATA: <json_array>] (Strict JSON array containing exact items ordered, including Delivery Fee).
+
+7. CRITICAL PAYMENT TAG RULES:
+   - When presenting the order summary, ONLY ask the user to confirm their order and select a payment method. DO NOT output payment tags at this summary stage.
+   - ONLY output payment tags AFTER the customer explicitly agrees to proceed to payment or confirms they have made a bank transfer.
+   - Strict JSON Format for CART_DATA:
+     Must use EXACTLY these keys: "item_name" (string), "quantity" (integer), and "unit_price" (number).
+     Example:
      [GENERATE_LINK: 6000]
      [CART_DATA: [{"item_name": "Smokey Jollof Rice", "quantity": 2, "unit_price": 2500}, {"item_name": "Delivery Fee", "quantity": 1, "unit_price": 1000}]]
-
-7. CRITICAL PAYMENT LINK RULES:
-   - When presenting the final order summary, ONLY ask the user to confirm (e.g., "Please confirm if you want to proceed"). DO NOT output the tags at this stage.
-   - ONLY output the tags AFTER the customer explicitly replies with "yes", "proceed", or confirms they are ready to pay.
-   - When you do output the tags, DO NOT say phrases like "I will generate a link for you" or "Here is your link". Just say "Great! Please complete your payment below:" and output the tags. The system will automatically inject the link.
+   - NEVER generate fake URLs or markdown payment links like [Pay Here](https://...). The backend will handle link generation automatically.
 
 ### STRICT MENU & PRICING CONSTRAINTS (ZERO HALLUCINATIONS)
 1. DATABASE GROUND TRUTH:
@@ -63,8 +82,7 @@ RULES & INTENT HANDLING:
 
 ### ORDERING & DELIVERY FEE RULES
 1. Standard Delivery Fee = ₦1,000 (0 to 4 Main Courses).
-2. Bulk Main Course Discount = ₦500 (5 or more Main Courses).
-`;
+2. Bulk Main Course Discount = ₦500 (5 or more Main Courses).`;
 
 // Active, stable Groq model identifiers
 const GROQ_MODELS = [
