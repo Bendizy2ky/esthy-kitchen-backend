@@ -3,8 +3,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { supabase } from './config/supabase.js';
-import { generateAIResponse, SYSTEM_PROMPT } from './services/aiService.js'; 
-import { sendWhatsAppMessage } from './services/whatsappService.js';
+import { generateAIResponse, SYSTEM_PROMPT, transcribeAudioWithGroq } from './services/aiService.js'; 
+import { sendWhatsAppMessage, downloadWhatsAppMedia } from './services/whatsappService.js';
 import { getChatHistory, saveChatMessage } from './services/chatService.js';
 import { generatePaymentLink } from './services/paystackService.js';
 import { createCompleteOrder } from './services/orderService.js';
@@ -76,6 +76,26 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
     if (messageData.message?.listResponseMessage) {
       textMessage = messageData.message.listResponseMessage.singleSelectReply.selectedRowId;
+    }
+
+    // 🎤 NEW: Check for Voice Notes / Audio Messages
+    const isAudio = messageData.message?.audioMessage;
+
+    if (isAudio && !isFromMe && senderNumber !== 'status@broadcast') {
+      try {
+        console.log(`🎵 Audio message detected from ${senderNumber}, downloading...`);
+        // 1. Download the media using Evolution API
+        const audioBuffer = await downloadWhatsAppMedia(messageData.key); 
+        
+        // 2. Transcribe using Groq Whisper
+        textMessage = await transcribeAudioWithGroq(audioBuffer);
+        console.log(`🎤 Transcribed Voice Note: "${textMessage}"`);
+        
+      } catch (audioErr) {
+        console.error("❌ Audio processing failed:", audioErr);
+        await sendWhatsAppMessage(senderNumber, "I couldn't quite hear that. Could you please type your order instead?");
+        return;
+      }
     }
 
     if (!isFromMe && textMessage && senderNumber !== 'status@broadcast') {
@@ -161,7 +181,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
 
         // 1. Extract JSON cart data and enforce Server-Side Price Verification
         let parsedCartData = null;
-        let secureTotalAmount = 0; // Holds the server-verified total
+        let secureTotalAmount = 0; 
         
         const cartDataMatch = aiResponse.match(/\[CART_DATA:\s*(\[.*?\])\]/s);
         
@@ -169,23 +189,19 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           parsedCartData = parseCartData(cartDataMatch[1]);
           aiResponse = aiResponse.replace(cartDataMatch[0], '').trim();
 
-          // 🚨 SECURITY FIX #2: AI Prompt Injection Protection
-          // Cross-reference AI cart items with actual Supabase database prices
           if (parsedCartData && parsedCartData.length > 0) {
             parsedCartData = parsedCartData.map(item => {
-              // A. Handle Delivery Fees (Prevent negative fee injection)
               if (item.item_name.toLowerCase().includes('delivery')) {
                 const safeFee = Math.max(0, Number(item.unit_price) || 0);
                 secureTotalAmount += (safeFee * item.quantity);
                 return { ...item, unit_price: safeFee };
               }
               
-              // B. Handle Food Items (Strictly use DB prices)
               const dbItem = menuItems.find(mi => mi.name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
               
               if (dbItem) {
                 const truePrice = Number(dbItem.price);
-                const safeQty = Math.max(1, Number(item.quantity) || 1); // Prevent negative quantity injection
+                const safeQty = Math.max(1, Number(item.quantity) || 1); 
                 secureTotalAmount += (truePrice * safeQty);
                 return { ...item, unit_price: truePrice, quantity: safeQty, line_total: truePrice * safeQty };
               } else {
@@ -194,7 +210,6 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
               }
             });
             
-            // Filter out nullified items
             parsedCartData = parsedCartData.filter(item => item.quantity > 0 || item.item_name.toLowerCase().includes('delivery'));
           }
         }
@@ -212,9 +227,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
         const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
 
         if (paymentMatch) {
-          // OVERRIDE the AI's requested amount with our securely calculated backend total
           const finalAmount = secureTotalAmount > 0 ? secureTotalAmount : parseInt(paymentMatch[1], 10);
-          
           const paymentUrl = await generatePaymentLink(finalAmount, senderNumber, parsedCartData, deliveryAddress);
           
           if (paymentUrl) {
@@ -239,7 +252,6 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           const orderCode = generateShortOrderCode();
           const cartSummary = parsedCartData || [];
           
-          // Use our secure total for the database record
           const finalAmount = secureTotalAmount > 0 
             ? secureTotalAmount 
             : cartSummary.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
@@ -319,7 +331,7 @@ An issue occurred while processing a message for customer:
   }
 });
 
-// Paystack Webhook (Secured with HMAC SHA512 Verification)
+// Paystack Webhook
 app.post('/webhook/paystack', async (req, res) => {
   const secret = process.env.PAYSTACK_SECRET_KEY;
   const paystackSignature = req.headers['x-paystack-signature'];

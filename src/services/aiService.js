@@ -1,5 +1,8 @@
 // src/services/aiService.js
 import Groq from 'groq-sdk';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -137,4 +140,26 @@ export async function generateAIResponse(promptContext) {
   }
 
   throw new Error('All Groq AI models failed to generate a response.');
+}
+
+export async function transcribeAudioWithGroq(audioBuffer) {
+  const tempFilePath = path.join(os.tmpdir(), `voice_note_${Date.now()}.ogg`);
+  fs.writeFileSync(tempFilePath, audioBuffer);
+
+  try {
+    const transcription = await groq.audio.transcriptions.create({
+      file: fs.createReadStream(tempFilePath),
+      model: "whisper-large-v3",
+      prompt: "Customer ordering food from a restaurant in Nigeria. Pidgin english allowed. Address details included.", 
+      response_format: "json",
+      language: "en", 
+      temperature: 0.0,
+    });
+
+    return transcription.text;
+  } finally {
+    if (fs.existsSync(tempFilePath)) {
+      fs.unlinkSync(tempFilePath);
+    }
+  }
 }
