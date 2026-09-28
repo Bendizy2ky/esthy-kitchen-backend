@@ -1,151 +1,149 @@
-// src/services/adminService.js
 import { supabase } from '../config/supabase.js';
-import { sendWhatsAppMessage } from './whatsappService.js'; 
+import { sendWhatsAppMessage } from './whatsappService.js';
 
 const ADMIN_PHONE = (process.env.KITCHEN_PHONE_NUMBER || '').replace(/\D/g, '');
 
-export async function handleAdminCommand(senderNumber, incomingText) {
+export async function handleAdminCommand(senderNumber, incomingText, rawMessageData) {
   const cleanSender = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
 
-  if (cleanSender !== ADMIN_PHONE) return false; 
-  if (!incomingText.startsWith('!')) return false;
+  if (cleanSender !== ADMIN_PHONE) {
+    return false;
+  }
 
-  const args = incomingText.trim().split(' ');
-  const command = args[0].toLowerCase();
-  const payload = args.slice(1).join(' ');
+  const text = incomingText.trim();
+  const lowerText = text.toLowerCase();
 
-  // STORE CONTROL
-  if (command === '!openkitchen') {
-    const { error } = await supabase
-      .from('store_status')
-      .upsert({ id: 1, is_open: true });
+  // 1. HELP MENU
+  if (lowerText === '!admin') {
+    const menuMessage = 
+`🛠️ *ESTHY'S KITCHEN ADMIN* 🛠️
 
-    if (error) {
-      console.error('❌ Supabase Open Kitchen Error:', error.message);
-      await sendWhatsAppMessage(senderNumber, `❌ Failed to open kitchen: ${error.message}`);
-      return true;
-    }
+*Store Control*
+• \`!openkitchen\` - Enable AI customer ordering
+• \`!closekitchen\` - Pause AI customer ordering
 
-    await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen OPEN*. AI ordering enabled.');
+*Stock & Price Management*
+• \`!soldout <Item Name>\` - Hide item from live menu
+• \`!available <Item Name>\` - Unhide item on live menu
+• \`!price <Item Name> | <New Price>\` - Change item price
+• \`!additem <Name> | <Category> | <Price>\` - Add new dish
+
+*Live Chat Takeover*
+• \`!human <Phone>\` - Pause AI for customer
+• \`!bot <Phone>\` - Resume AI for customer
+
+_Example:_ \`!price Jollof Rice | 4000\``;
+
+    await sendWhatsAppMessage(senderNumber, menuMessage);
     return true;
   }
 
-  if (command === '!closekitchen') {
-    const { error } = await supabase
-      .from('store_status')
-      .upsert({ id: 1, is_open: false });
-
-    if (error) {
-      console.error('❌ Supabase Close Kitchen Error:', error.message);
-      await sendWhatsAppMessage(senderNumber, `❌ Failed to close kitchen: ${error.message}`);
-      return true;
-    }
-
-    await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen CLOSED*. AI ordering paused.');
+  // 2. STORE CONTROL
+  if (lowerText === '!openkitchen' || lowerText === '!open') {
+    await supabase.from('store_status').upsert({ id: 1, is_open: true });
+    await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen is now OPEN*. AI customer ordering enabled.');
     return true;
   }
 
-  // MENU & STOCK
-  if (command === '!soldout' && payload) {
+  if (lowerText === '!closekitchen' || lowerText === '!close') {
+    await supabase.from('store_status').upsert({ id: 1, is_open: false });
+    await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen is now CLOSED*. AI ordering paused.');
+    return true;
+  }
+
+  // 3. CHANGE ITEM PRICE (Preserves past order history)
+  if (lowerText.startsWith('!price ')) {
+    const payload = text.substring(7).trim();
+    const parts = payload.split('|').map(p => p.trim());
+
+    if (parts.length < 2) {
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!price Item Name | New Price`\n\n_Example:_ `!price Jollof Rice | 4500`');
+      return true;
+    }
+
+    const [itemName, priceStr] = parts;
+    const newPrice = parseFloat(priceStr.replace(/[^0-9.]/g, ''));
+
+    if (isNaN(newPrice)) {
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Amount*. Please provide a valid numeric price.');
+      return true;
+    }
+
+    const { data, error } = await supabase
+      .from('menu_items')
+      .update({ price: newPrice })
+      .ilike('name', `%${itemName}%`)
+      .select();
+
+    if (error || !data || data.length === 0) {
+      await sendWhatsAppMessage(senderNumber, `❌ Could not find item matching "*${itemName}*" in database.`);
+    } else {
+      await sendWhatsAppMessage(senderNumber, `✅ Price for *${data[0].name}* updated to ₦${newPrice.toLocaleString()}!`);
+    }
+    return true;
+  }
+
+  // 4. ADD NEW MENU ITEM
+  if (lowerText.startsWith('!additem ')) {
+    const payload = text.substring(9).trim();
+    const parts = payload.split('|').map(p => p.trim());
+
+    if (parts.length < 3) {
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!additem Item Name | Category | Price`\n\n_Example:_ `!additem Grilled Catfish | Seafood | 6000`');
+      return true;
+    }
+
+    const [name, category, priceStr] = parts;
+    const price = parseFloat(priceStr.replace(/[^0-9.]/g, ''));
+
+    if (isNaN(price)) {
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Amount*. Please provide a valid numeric price.');
+      return true;
+    }
+
+    const { error } = await supabase
+      .from('menu_items')
+      .insert([{ name, category, price, is_available: true }]);
+
+    if (error) {
+      await sendWhatsAppMessage(senderNumber, `❌ Error adding item: ${error.message}`);
+    } else {
+      await sendWhatsAppMessage(senderNumber, `✅ Added *${name}* (${category}) at ₦${price.toLocaleString()} to live menu!`);
+    }
+    return true;
+  }
+
+  // 5. TOGGLE SOLDOUT (is_available = false)
+  if (lowerText.startsWith('!soldout ')) {
+    const itemName = text.substring(9).trim();
     const { data, error } = await supabase
       .from('menu_items')
       .update({ is_available: false })
-      .ilike('name', payload)
+      .ilike('name', `%${itemName}%`)
       .select();
-    
-    if (error) {
-      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
-      return true;
-    }
 
-    if (data && data.length > 0) {
-      await sendWhatsAppMessage(senderNumber, `🚫 Marked *${data[0].name}* as sold out.`);
+    if (error || !data || data.length === 0) {
+      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`);
     } else {
-      await sendWhatsAppMessage(senderNumber, `❌ Could not find item matching: ${payload}`);
+      await sendWhatsAppMessage(senderNumber, `🚫 *${data[0].name}* is now marked as Sold Out.`);
     }
     return true;
   }
 
-  if (command === '!available' && payload) {
+  // 6. TOGGLE AVAILABLE (is_available = true)
+  if (lowerText.startsWith('!available ')) {
+    const itemName = text.substring(11).trim();
     const { data, error } = await supabase
       .from('menu_items')
       .update({ is_available: true })
-      .ilike('name', payload)
+      .ilike('name', `%${itemName}%`)
       .select();
 
-    if (error) {
-      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
-      return true;
-    }
-    
-    if (data && data.length > 0) {
-      await sendWhatsAppMessage(senderNumber, `✅ Restored *${data[0].name}* to available.`);
+    if (error || !data || data.length === 0) {
+      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`);
     } else {
-      await sendWhatsAppMessage(senderNumber, `❌ Could not find item matching: ${payload}`);
+      await sendWhatsAppMessage(senderNumber, `✅ *${data[0].name}* is back on the live menu.`);
     }
-    return true;
-  }
-
-  if (['!deleteitem', '!delete_item', '!deletemenu', '!delete_menu'].includes(command) && payload) {
-    const { error, count } = await supabase
-      .from('menu_items')
-      .delete({ count: 'exact' })
-      .eq('name', payload);
-      
-    if (error) {
-      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
-      return true;
-    }
-
-    if (count > 0) {
-      await sendWhatsAppMessage(senderNumber, `🗑️ Permanently deleted exact match: ${payload}`);
-    } else {
-      await sendWhatsAppMessage(senderNumber, `❌ Exact match not found for deletion: ${payload}`);
-    }
-    return true;
-  }
-
-  // AGENT CONTROL
-  if (['!human', '!pause'].includes(command) && payload) {
-    const cleanCustomer = payload.replace(/\D/g, '');
-    const { error } = await supabase
-      .from('user_states')
-      .upsert({ phone: cleanCustomer, mode: 'human' });
-
-    if (error) {
-      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
-      return true;
-    }
-
-    await sendWhatsAppMessage(senderNumber, `⏸️ AI paused for customer ${cleanCustomer}. You are now in manual control.`);
-    return true;
-  }
-
-  if (['!bot', '!reset'].includes(command) && payload) {
-    const cleanCustomer = payload.replace(/\D/g, '');
-    const { error } = await supabase
-      .from('user_states')
-      .upsert({ phone: cleanCustomer, mode: 'ai' });
-
-    if (error) {
-      await sendWhatsAppMessage(senderNumber, `❌ Database Error: ${error.message}`);
-      return true;
-    }
-
-    await sendWhatsAppMessage(senderNumber, `▶️ AI resumed for customer ${cleanCustomer}.`);
-    return true;
-  }
-
-  // HELPER MENU
-  if (command === '!admin') {
-    const menuMessage = `🛠️ *ESTHY'S KITCHEN ADMIN* 🛠️\n\n` +
-      `*Store Control*\n` +
-      `!openkitchen\n!closekitchen\n\n` +
-      `*Menu & Stock*\n` +
-      `!soldout <Item>\n!available <Item>\n!deleteitem <Item>\n\n` +
-      `*Agent Control*\n` +
-      `!human <Phone>\n!bot <Phone>`;
-    await sendWhatsAppMessage(senderNumber, menuMessage);
     return true;
   }
 
