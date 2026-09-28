@@ -260,13 +260,35 @@ ${foodItems}
       } catch (error) {
         console.error('❌ Error processing AI workflow:', error.message);
         
-        // GRACEFUL FALLBACK TO CUSTOMER
+        // 1. SEND GRACEFUL FALLBACK TO CUSTOMER
         const fallbackMessage = "We are experiencing a brief network delay with our system. ⏳ A staff member has been notified and will be right with you!";
         
         try {
           await sendWhatsAppMessage(senderNumber, fallbackMessage);
         } catch (sendErr) {
-          console.error('❌ Failed to send fallback message:', sendErr.message);
+          console.error('❌ Failed to send customer fallback message:', sendErr.message);
+        }
+
+        // 2. SEND REAL-TIME ALERT TO KITCHEN MANAGER / STAFF
+        const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
+        if (kitchenPhone) {
+          const cleanCustomer = senderNumber.replace(/\D/g, '');
+          const managerErrorAlert = 
+`⚠️ *SYSTEM ERROR ALERT!*
+-----------------------------------
+An issue occurred while processing a message for customer:
+📱 *Customer:* wa.me/${cleanCustomer} (${senderNumber})
+
+*Error:* \`${error.message}\`
+
+👉 *Action Needed:* Please check in with the customer manually or reply \`!human ${cleanCustomer}\` to take over.`;
+
+          try {
+            await sendWhatsAppMessage(kitchenPhone, managerErrorAlert);
+            console.log(`📲 Error alert sent to Kitchen Manager (${kitchenPhone})`);
+          } catch (mgrErr) {
+            console.error('❌ Failed to send kitchen error alert:', mgrErr.message);
+          }
         }
       }
     }
