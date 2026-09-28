@@ -82,6 +82,26 @@ app.post('/webhook/whatsapp', async (req, res) => {
       console.log(`💬 Received customer message from ${senderNumber}: ${textMessage}`);
       
       try {
+        const { data: storeStatus, error: statusError } = await supabase
+          .from('store_status')
+          .select('is_open')
+          .eq('id', 1)
+          .single();
+
+        if (storeStatus && storeStatus.is_open === false) {
+          const closedMsg = "So sorry, but Esthy's Spicy Kitchen is currently closed! 🛑 We aren't taking orders right now, but please check back during our opening hours.";
+          await sendWhatsAppMessage(senderNumber, closedMsg);
+          return;
+        }
+
+        const { data: userState } = await supabase
+          .from('user_states')
+          .select('mode')
+          .eq('phone', senderNumber)
+          .single();
+
+        if (userState && userState.mode === 'human') return;
+
         await saveChatMessage(senderNumber, 'user', textMessage);
 
         const { data: menuItems, error } = await supabase
