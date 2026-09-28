@@ -1,6 +1,7 @@
 // index.js
 import express from 'express';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 import { supabase } from './config/supabase.js';
 import { generateAIResponse, SYSTEM_PROMPT } from './services/aiService.js'; 
 import { sendWhatsAppMessage } from './services/whatsappService.js';
@@ -295,8 +296,23 @@ An issue occurred while processing a message for customer:
   }
 });
 
-// Paystack Webhook (The absolute Source of Truth for Payments)
+// Paystack Webhook (Secured with HMAC SHA512 Verification)
 app.post('/webhook/paystack', async (req, res) => {
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+  const paystackSignature = req.headers['x-paystack-signature'];
+
+  // 1. Create a hash of the incoming request body using your secret key
+  const hash = crypto.createHmac('sha512', secret)
+                     .update(JSON.stringify(req.body))
+                     .digest('hex');
+
+  // 2. Block the request if the signatures do not match
+  if (hash !== paystackSignature) {
+    console.warn('🚨 SECURITY ALERT: Blocked an unauthorized webhook attempt!');
+    return res.status(401).send('Unauthorized Request');
+  }
+
+  // 3. Acknowledge receipt to Paystack immediately
   res.status(200).send('Webhook received');
 
   const event = req.body;
