@@ -146,9 +146,10 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
         if (menuErr) throw new Error(`Supabase Menu Fetch Error: ${menuErr.message}`);
 
-        const formattedMenu = (menuItems || []).map(item => 
-          `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}`
-        ).join('\n');
+        const formattedMenu = (menuItems || []).map(item => {
+          const timeTag = item.ready_time ? ` [SCHEDULED FOR: ${item.ready_time}]` : '';
+          return `- ${item.name} (${item.category || 'Menu'}): ₦${Number(item.price).toLocaleString()}${timeTag}`;
+        }).join('\n');
 
         const history = await getChatHistory(senderNumber, 8);
         const historyText = history.map(msg => 
@@ -167,6 +168,8 @@ Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
 
 CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE_LINK: <amount>] or [BANK_TRANSFER_CLAIMED] tag in this response, you MUST also output the customer's delivery address (extracted from the chat history) using the format [ADDRESS: <Full Delivery Address>]. If it is a pickup order, output [ADDRESS: Self-Pickup].
+
+If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it in the menu, you MUST explicitly tell them the wait time and ask if they are okay with waiting BEFORE you generate a [GENERATE_LINK] or [BANK_TRANSFER_CLAIMED] tag.
         `;
 
         const combinedPrompt = `${SYSTEM_PROMPT}\n\n${fullUserPrompt}`;
@@ -199,13 +202,13 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
                 return { ...item, unit_price: safeFee };
               }
               
-              const dbItem = menuItems.find(mi => mi.name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
+              const dbItem = (menuItems || []).find(mi => mi.name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
               
               if (dbItem) {
                 const truePrice = Number(dbItem.price);
                 const safeQty = Math.max(1, Number(item.quantity) || 1); 
                 secureTotalAmount += (truePrice * safeQty);
-                return { ...item, unit_price: truePrice, quantity: safeQty, line_total: truePrice * safeQty };
+                return { ...item, unit_price: truePrice, quantity: safeQty, line_total: truePrice * safeQty, ready_time: dbItem.ready_time };
               } else {
                 console.warn(`🚨 SECURITY ALERT: Discarding invalid/fake cart item: ${item.item_name}`);
                 return { ...item, unit_price: 0, quantity: 0, line_total: 0 }; 
@@ -275,7 +278,13 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
           const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
           
           if (kitchenPhones.length > 0) {
-            const foodItems = cartSummary.map(item => `• *${item.quantity}x* ${item.item_name}`).join('\n');
+            const foodItems = cartSummary
+              .filter(item => !item.item_name.toLowerCase().includes('delivery'))
+              .map(item => {
+                const timeWarning = item.ready_time ? ` ⚠️ [WAIT FOR: ${item.ready_time}]` : '';
+                return `• *${item.quantity}x* ${item.item_name}${timeWarning}`;
+              })
+              .join('\n');
             const managerAlert = 
 `🔔 *NEW BANK TRANSFER TO VERIFY!*
 -----------------------------------
@@ -397,7 +406,10 @@ app.post('/webhook/paystack', async (req, res) => {
     if (kitchenPhones.length > 0) {
       const foodItemsToPrepare = cartSummary
         .filter(item => !item.item_name.toLowerCase().includes('delivery'))
-        .map(item => `• *${item.quantity}x* ${item.item_name}`)
+        .map(item => {
+          const timeWarning = item.ready_time ? ` ⚠️ [WAIT FOR: ${item.ready_time}]` : '';
+          return `• *${item.quantity}x* ${item.item_name}${timeWarning}`;
+        })
         .join('\n');
 
       const fulfillmentTypeHeader = isPickup ? '🛍️ *SELF-PICKUP*' : '🚚 *DELIVERY ORDER*';

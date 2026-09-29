@@ -208,6 +208,46 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
+  if (lowerText.startsWith('!time ')) {
+    const payload = text.substring(6).trim();
+    const parts = payload.split('|').map(p => p.trim());
+
+    if (parts.length < 2) {
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!time Item Name | 3:00 PM`', instanceName);
+      return true;
+    }
+
+    const [itemName, readyTime] = parts;
+    const { data, error } = await supabase
+      .from('menu_items')
+      .update({ ready_time: readyTime })
+      .ilike('name', `%${itemName}%`)
+      .select();
+
+    if (error || !data || data.length === 0) {
+      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`, instanceName);
+    } else {
+      await sendWhatsAppMessage(senderNumber, `🕒 *${data[0].name}* is now scheduled for *${readyTime}*.`, instanceName);
+    }
+    return true;
+  }
+
+  if (lowerText.startsWith('!cleartime ')) {
+    const itemName = text.substring(11).trim();
+    const { data, error } = await supabase
+      .from('menu_items')
+      .update({ ready_time: null })
+      .ilike('name', `%${itemName}%`)
+      .select();
+
+    if (error || !data || data.length === 0) {
+      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`, instanceName);
+    } else {
+      await sendWhatsAppMessage(senderNumber, `✅ *${data[0].name}* is now marked as available immediately.`, instanceName);
+    }
+    return true;
+  }
+
   if (lowerText.startsWith('!human ')) {
     const targetPhone = text.substring(7).trim().replace(/\D/g, '');
     await supabase.from('user_states').upsert({ phone: targetPhone, mode: 'human' });
