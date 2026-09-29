@@ -3,12 +3,20 @@ import { sendWhatsAppMessage } from './whatsappService.js';
 import { createCompleteOrder } from './orderService.js';
 import { saveChatMessage } from './chatService.js';
 
-const ADMIN_PHONE = (process.env.KITCHEN_PHONE_NUMBER || '').replace(/\D/g, '');
-
 export async function handleAdminCommand(senderNumber, incomingText, rawMessageData) {
   const cleanSender = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
+  
+  // Retrieve the comma-separated list of admin numbers (fallback to kitchen numbers if needed)
+  const adminPhonesStr = process.env.ADMIN_PHONE_NUMBERS || process.env.KITCHEN_PHONE_NUMBERS || '';
+  
+  // Create an array of clean, verified admin phone numbers
+  const adminPhones = adminPhonesStr
+    .split(',')
+    .map(phone => phone.trim().replace(/\D/g, ''))
+    .filter(Boolean);
 
-  if (cleanSender !== ADMIN_PHONE) {
+  // If the sender is not in the array of authorized admins, ignore the command
+  if (!adminPhones.includes(cleanSender)) {
     return false;
   }
 

@@ -35,18 +35,22 @@ export async function sendWhatsAppMessage(phoneNumber, text) {
   }
 }
 
-
-export async function downloadWhatsAppMedia(messageKey) {
+/**
+ * Downloads base64 media from Evolution API using the dynamic instance name.
+ */
+export async function downloadWhatsAppMedia(messageKey, dynamicInstanceName) {
   const evolutionApiUrl = process.env.EVOLUTION_API_URL;
-  const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
   const apiKey = process.env.EVOLUTION_API_KEY;
+  
+  // Use the dynamically passed instance, or fallback to the one in .env
+  const activeInstance = dynamicInstanceName || process.env.EVOLUTION_INSTANCE_NAME;
 
-  if (!evolutionApiUrl || !instanceName || !apiKey) {
-    throw new Error("Evolution API credentials missing in .env");
+  if (!evolutionApiUrl || !activeInstance || !apiKey) {
+    throw new Error("Evolution API credentials or instance name missing.");
   }
 
   // Evolution API endpoint to download base64 media
-  const endpoint = `${evolutionApiUrl}/chat/getBase64FromMediaMessage/${instanceName}`;
+  const endpoint = `${evolutionApiUrl}/chat/getBase64FromMediaMessage/${activeInstance}`;
   
   const response = await axios.post(endpoint, {
     message: { key: messageKey }

@@ -63,7 +63,8 @@ app.get('/payment-success', (req, res) => {
 app.post('/webhook/whatsapp', async (req, res) => {
   res.status(200).send('EVENT_RECEIVED');
 
-  const { event, data } = req.body;
+  // Extract 'instance' dynamically from the webhook payload
+  const { event, data, instance } = req.body;
 
   if (event === 'messages.upsert') {
     const messageData = data;
@@ -78,16 +79,17 @@ app.post('/webhook/whatsapp', async (req, res) => {
       textMessage = messageData.message.listResponseMessage.singleSelectReply.selectedRowId;
     }
 
-    // 🎤 NEW: Check for Voice Notes / Audio Messages
+    // 🎤 Check for Voice Notes / Audio Messages
     const isAudio = messageData.message?.audioMessage;
 
     if (isAudio && !isFromMe && senderNumber !== 'status@broadcast') {
       try {
-        console.log(`🎵 Audio message detected from ${senderNumber}, downloading...`);
-        // 1. Download the media using Evolution API
-        const audioBuffer = await downloadWhatsAppMedia(messageData.key); 
+        console.log(`🎵 Audio message detected via [${instance}] from${senderNumber}, downloading...`);
         
-        // 2. Transcribe using Groq Whisper
+        // Pass the dynamic instance to the download function
+        const audioBuffer = await downloadWhatsAppMedia(messageData.key, instance); 
+        
+        // Transcribe using Groq Whisper
         textMessage = await transcribeAudioWithGroq(audioBuffer);
         console.log(`🎤 Transcribed Voice Note: "${textMessage}"`);
         
@@ -269,8 +271,10 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
             return;
           }
 
-          const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
-          if (kitchenPhone) {
+          // Loop through all kitchen numbers for Bank Transfer alerts
+          const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
+          
+          if (kitchenPhones.length > 0) {
             const foodItems = cartSummary.map(item => `• *${item.quantity}x* ${item.item_name}`).join('\n');
             const managerAlert = 
 `🔔 *NEW BANK TRANSFER TO VERIFY!*
@@ -287,7 +291,9 @@ ${foodItems}
 👉 *To confirm payment & dispatch order, reply:*
 \`!confirm ${orderCode}\``;
 
-            await sendWhatsAppMessage(kitchenPhone, managerAlert);
+            for (const phone of kitchenPhones) {
+              if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerAlert);
+            }
           }
           return;
         }
@@ -306,8 +312,9 @@ ${foodItems}
           console.error('❌ Failed to send customer fallback message:', sendErr.message);
         }
 
-        const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
-        if (kitchenPhone) {
+        // Loop through all kitchen numbers for Error alerts
+        const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
+        if (kitchenPhones.length > 0) {
           const cleanCustomer = senderNumber.replace(/\D/g, '');
           const managerErrorAlert = 
 `⚠️ *SYSTEM ERROR ALERT!*
@@ -319,11 +326,8 @@ An issue occurred while processing a message for customer:
 
 👉 *Action Needed:* Please check in with the customer manually or reply \`!human ${cleanCustomer}\` to take over.`;
 
-          try {
-            await sendWhatsAppMessage(kitchenPhone, managerErrorAlert);
-            console.log(`📲 Error alert sent to Kitchen Manager (${kitchenPhone})`);
-          } catch (mgrErr) {
-            console.error('❌ Failed to send kitchen error alert:', mgrErr.message);
+          for (const phone of kitchenPhones) {
+             if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerErrorAlert);
           }
         }
       }
@@ -368,7 +372,7 @@ app.post('/webhook/paystack', async (req, res) => {
                      (!deliveryAddress && !cartSummary.some(i => i.item_name.toLowerCase().includes('delivery'))) ||
                      deliveryAddress.toLowerCase().includes('pickup');
 
-    console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref: ${reference})`);
+    console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref:${reference})`);
 
     const orderData = { reference, customerPhone, amount, customerEmail };
 
@@ -376,7 +380,7 @@ app.post('/webhook/paystack', async (req, res) => {
     if (!result.success) return;
 
     if (customerPhone) {
-      const receiptMessage = `✅ *SYSTEM ALERT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
+      const receiptMessage = `✅ *SYSTEM ALERT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference:${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
       
       try {
         await sendWhatsAppMessage(customerPhone, receiptMessage);
@@ -386,8 +390,9 @@ app.post('/webhook/paystack', async (req, res) => {
       }
     }
 
-    const kitchenPhone = process.env.KITCHEN_PHONE_NUMBER;
-    if (kitchenPhone) {
+    // Loop through all kitchen numbers for Paystack alerts
+    const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
+    if (kitchenPhones.length > 0) {
       const foodItemsToPrepare = cartSummary
         .filter(item => !item.item_name.toLowerCase().includes('delivery'))
         .map(item => `• *${item.quantity}x* ${item.item_name}`)
@@ -414,11 +419,8 @@ ${foodItemsToPrepare || '• See order reference in DB'}
 -----------------------------------
 🔥 *Status:* Payment Verified. Start preparation!`;
 
-      try {
-        await sendWhatsAppMessage(kitchenPhone, kitchenAlert);
-        console.log(`📲 Kitchen notification sent to ${kitchenPhone}`);
-      } catch (err) {
-        console.error('❌ Error sending kitchen notification:', err);
+      for (const phone of kitchenPhones) {
+         if (phone.trim()) await sendWhatsAppMessage(phone.trim(), kitchenAlert);
       }
     }
   }
