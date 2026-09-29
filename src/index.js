@@ -298,7 +298,7 @@ ${foodItems}
 
 -----------------------------------
 👉 *To confirm payment & dispatch order, reply:*
-\`!confirm ${orderCode}\``;
+\`#confirm ${orderCode}\``;
 
             for (const phone of kitchenPhones) {
               if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerAlert, instance);
@@ -333,7 +333,7 @@ An issue occurred while processing a message for customer:
 
 *Error:* \`${error.message}\`
 
-👉 *Action Needed:* Please check in with the customer manually or reply \`!human ${cleanCustomer}\` to take over.`;
+👉 *Action Needed:* Please check in with the customer manually or reply \`#human ${cleanCustomer}\` to take over.`;
 
           for (const phone of kitchenPhones) {
              if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerErrorAlert, instance);

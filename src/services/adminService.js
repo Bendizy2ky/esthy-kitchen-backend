@@ -20,33 +20,33 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
   const text = incomingText.trim();
   const lowerText = text.toLowerCase();
 
-  if (lowerText === '!admin') {
+  if (lowerText === '#admin') {
     const menuMessage = 
 `🛠️ *ESTHY'S KITCHEN ADMIN* 🛠️
 
 *Payment Verifications*
-• \`!pending\` - View unverified bank transfers
-• \`!confirm <OrderCode>\` - Approve bank transfer
+• \`#pending\` - View unverified bank transfers
+• \`#confirm <OrderCode>\` - Approve bank transfer
 
 *Store Control*
-• \`!openkitchen\` - Enable AI customer ordering
-• \`!closekitchen\` - Pause AI customer ordering
+• \`#openkitchen\` - Enable AI customer ordering
+• \`#closekitchen\` - Pause AI customer ordering
 
 *Stock & Price Management*
-• \`!soldout <Item Name>\` - Hide item from live menu
-• \`!available <Item Name>\` - Unhide item on live menu
-• \`!price <Item Name> | <New Price>\` - Change item price
-• \`!additem <Name> | <Category> | <Price>\` - Add new dish
+• \`#soldout <Item Name>\` - Hide item from live menu
+• \`#available <Item Name>\` - Unhide item on live menu
+• \`#price <Item Name> | <New Price>\` - Change item price
+• \`#additem <Name> | <Category> | <Price>\` - Add new dish
 
 *Live Chat Takeover*
-• \`!human <Phone>\` - Pause AI for customer
-• \`!bot <Phone>\` - Resume AI for customer`;
+• \`#human <Phone>\` - Pause AI for customer
+• \`#bot <Phone>\` - Resume AI for customer`;
 
     await sendWhatsAppMessage(senderNumber, menuMessage, instanceName);
     return true;
   }
 
-  if (lowerText.startsWith('!confirm ')) {
+  if (lowerText.startsWith('#confirm ')) {
     const orderCode = text.substring(9).trim().toUpperCase();
 
     const { data: pending, error } = await supabase
@@ -91,7 +91,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
-  if (lowerText === '!pending') {
+  if (lowerText === '#pending') {
     const { data: list } = await supabase.from('pending_orders').select('*');
 
     if (!list || list.length === 0) {
@@ -100,28 +100,28 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     }
 
     const itemsList = list.map(p => `• *${p.order_code}* | ₦${p.amount.toLocaleString()} \vert{}${p.customer_phone}`).join('\n');
-    await sendWhatsAppMessage(senderNumber, `📋 *PENDING BANK TRANSFERS:* \n\n${itemsList}\n\n_Reply \`!confirm <code\` to approve._`, instanceName);
+    await sendWhatsAppMessage(senderNumber, `📋 *PENDING BANK TRANSFERS:* \n\n${itemsList}\n\n_Reply \`#confirm <code\` to approve._`, instanceName);
     return true;
   }
 
-  if (lowerText === '!openkitchen' || lowerText === '!open') {
+  if (lowerText === '#openkitchen' || lowerText === '#open') {
     await supabase.from('store_status').upsert({ id: 1, is_open: true });
     await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen is now OPEN*. AI customer ordering enabled.', instanceName);
     return true;
   }
 
-  if (lowerText === '!closekitchen' || lowerText === '!close') {
+  if (lowerText === '#closekitchen' || lowerText === '#close') {
     await supabase.from('store_status').upsert({ id: 1, is_open: false });
     await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen is now CLOSED*. AI ordering paused.', instanceName);
     return true;
   }
 
-  if (lowerText.startsWith('!price ')) {
+  if (lowerText.startsWith('#price ')) {
     const payload = text.substring(7).trim();
     const parts = payload.split('|').map(p => p.trim());
 
     if (parts.length < 2) {
-      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!price Item Name | New Price`', instanceName);
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `#price Item Name | New Price`', instanceName);
       return true;
     }
 
@@ -147,12 +147,12 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
-  if (lowerText.startsWith('!additem ')) {
+  if (lowerText.startsWith('#additem ')) {
     const payload = text.substring(9).trim();
     const parts = payload.split('|').map(p => p.trim());
 
     if (parts.length < 3) {
-      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!additem Item Name | Category | Price`', instanceName);
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `#additem Item Name | Category | Price`', instanceName);
       return true;
     }
 
@@ -176,7 +176,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
-  if (lowerText.startsWith('!soldout ')) {
+  if (lowerText.startsWith('#soldout ')) {
     const itemName = text.substring(9).trim();
     const { data, error } = await supabase
       .from('menu_items')
@@ -192,7 +192,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
-  if (lowerText.startsWith('!available ')) {
+  if (lowerText.startsWith('#available ')) {
     const itemName = text.substring(11).trim();
     const { data, error } = await supabase
       .from('menu_items')
@@ -208,12 +208,12 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
-  if (lowerText.startsWith('!time ')) {
+  if (lowerText.startsWith('#time ')) {
     const payload = text.substring(6).trim();
     const parts = payload.split('|').map(p => p.trim());
 
     if (parts.length < 2) {
-      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!time Item Name | 3:00 PM`', instanceName);
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `#time Item Name | 3:00 PM`', instanceName);
       return true;
     }
 
@@ -232,7 +232,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
-  if (lowerText.startsWith('!cleartime ')) {
+  if (lowerText.startsWith('#cleartime ')) {
     const itemName = text.substring(11).trim();
     const { data, error } = await supabase
       .from('menu_items')
@@ -248,14 +248,14 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     return true;
   }
 
-  if (lowerText.startsWith('!human ')) {
+  if (lowerText.startsWith('#human ')) {
     const targetPhone = text.substring(7).trim().replace(/\D/g, '');
     await supabase.from('user_states').upsert({ phone: targetPhone, mode: 'human' });
     await sendWhatsAppMessage(senderNumber, `👤 AI paused for user *${targetPhone}*. You can now chat directly.`, instanceName);
     return true;
   }
 
-  if (lowerText.startsWith('!bot ')) {
+  if (lowerText.startsWith('#bot ')) {
     const targetPhone = text.substring(5).trim().replace(/\D/g, '');
     await supabase.from('user_states').upsert({ phone: targetPhone, mode: 'bot' });
     await sendWhatsAppMessage(senderNumber, `🤖 AI resumed for user *${targetPhone}*.`, instanceName);
