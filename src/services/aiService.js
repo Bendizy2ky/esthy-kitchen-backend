@@ -58,7 +58,7 @@ RULES & INTENT HANDLING:
    - OPTION B: DIRECT BANK TRANSFER
      * Provide bank account details:
        • Bank Name: PALM PAY
-       • Account Number: 2349136144557
+       • Account Number: 8911112696
        • Account Name: ESTHER OKWOLI
        • Amount to Transfer: ₦<total_amount>
      * Instruct customer: "Once you have made the transfer, please reply with 'I have paid' or 'Transfer done'."
