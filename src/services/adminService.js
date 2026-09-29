@@ -37,6 +37,8 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
 • \`#available <Item Name>\` - Unhide item on live menu
 • \`#price <Item Name> | <New Price>\` - Change item price
 • \`#additem <Name> | <Category> | <Price>\` - Add new dish
+• \`#time <Item Name> | <Time>\` - Set an item's scheduled time
+• \`#cleartime <Item Name>\` - Clear an item's scheduled time
 
 *Live Chat Takeover*
 • \`#human <Phone>\` - Pause AI for customer
