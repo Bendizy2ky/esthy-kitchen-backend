@@ -3,19 +3,16 @@ import { sendWhatsAppMessage } from './whatsappService.js';
 import { createCompleteOrder } from './orderService.js';
 import { saveChatMessage } from './chatService.js';
 
-export async function handleAdminCommand(senderNumber, incomingText, rawMessageData) {
+export async function handleAdminCommand(senderNumber, incomingText, rawMessageData, instanceName) {
   const cleanSender = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
   
-  // Retrieve the comma-separated list of admin numbers (fallback to kitchen numbers if needed)
   const adminPhonesStr = process.env.ADMIN_PHONE_NUMBERS || process.env.KITCHEN_PHONE_NUMBERS || '';
   
-  // Create an array of clean, verified admin phone numbers
   const adminPhones = adminPhonesStr
     .split(',')
     .map(phone => phone.trim().replace(/\D/g, ''))
     .filter(Boolean);
 
-  // If the sender is not in the array of authorized admins, ignore the command
   if (!adminPhones.includes(cleanSender)) {
     return false;
   }
@@ -23,7 +20,6 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
   const text = incomingText.trim();
   const lowerText = text.toLowerCase();
 
-  // 1. HELP MENU
   if (lowerText === '!admin') {
     const menuMessage = 
 `🛠️ *ESTHY'S KITCHEN ADMIN* 🛠️
@@ -44,17 +40,12 @@ export async function handleAdminCommand(senderNumber, incomingText, rawMessageD
 
 *Live Chat Takeover*
 • \`!human <Phone>\` - Pause AI for customer
-• \`!bot <Phone>\` - Resume AI for customer
+• \`!bot <Phone>\` - Resume AI for customer`;
 
-_Examples:_ 
-\`!confirm AYT45B\`
-\`!price Jollof Rice | 4000\``;
-
-    await sendWhatsAppMessage(senderNumber, menuMessage);
+    await sendWhatsAppMessage(senderNumber, menuMessage, instanceName);
     return true;
   }
 
-  // 2. CONFIRM PENDING BANK TRANSFER
   if (lowerText.startsWith('!confirm ')) {
     const orderCode = text.substring(9).trim().toUpperCase();
 
@@ -65,7 +56,7 @@ _Examples:_
       .single();
 
     if (error || !pending) {
-      await sendWhatsAppMessage(senderNumber, `❌ No pending order found with ref *${orderCode}*.`);
+      await sendWhatsAppMessage(senderNumber, `❌ No pending order found with ref *${orderCode}*.`, instanceName);
       return true;
     }
 
@@ -79,7 +70,7 @@ _Examples:_
     const dbResult = await createCompleteOrder(orderPayload, pending.cart_data);
 
     if (!dbResult.success) {
-      await sendWhatsAppMessage(senderNumber, `❌ Failed to save order to main DB: ${dbResult.error}`);
+      await sendWhatsAppMessage(senderNumber, `❌ Failed to save order to main DB: ${dbResult.error}`, instanceName);
       return true;
     }
 
@@ -93,47 +84,44 @@ _Examples:_
 
 Thank you! Your bank transfer has been manually verified by the kitchen manager. Your meal is now being prepared! 🍲🔥`;
 
-    await sendWhatsAppMessage(pending.customer_phone, customerSuccessMsg);
+    await sendWhatsAppMessage(pending.customer_phone, customerSuccessMsg, instanceName);
     await saveChatMessage(pending.customer_phone, 'model', customerSuccessMsg);
 
-    await sendWhatsAppMessage(senderNumber, `✅ Payment verified for *${pending.order_code}*! Order moved to main DB and customer notified.`);
+    await sendWhatsAppMessage(senderNumber, `✅ Payment verified for *${pending.order_code}*! Order moved to main DB and customer notified.`, instanceName);
     return true;
   }
 
-  // 3. VIEW ALL UNVERIFIED BANK TRANSFERS
   if (lowerText === '!pending') {
     const { data: list } = await supabase.from('pending_orders').select('*');
 
     if (!list || list.length === 0) {
-      await sendWhatsAppMessage(senderNumber, '👌 No pending bank transfers awaiting verification.');
+      await sendWhatsAppMessage(senderNumber, '👌 No pending bank transfers awaiting verification.', instanceName);
       return true;
     }
 
-    const itemsList = list.map(p => `• *${p.order_code}* | ₦${p.amount.toLocaleString()} | ${p.customer_phone}`).join('\n');
-    await sendWhatsAppMessage(senderNumber, `📋 *PENDING BANK TRANSFERS:* \n\n${itemsList}\n\n_Reply \`!confirm <code\` to approve._`);
+    const itemsList = list.map(p => `• *${p.order_code}* | ₦${p.amount.toLocaleString()} \vert{}${p.customer_phone}`).join('\n');
+    await sendWhatsAppMessage(senderNumber, `📋 *PENDING BANK TRANSFERS:* \n\n${itemsList}\n\n_Reply \`!confirm <code\` to approve._`, instanceName);
     return true;
   }
 
-  // 4. STORE CONTROL
   if (lowerText === '!openkitchen' || lowerText === '!open') {
     await supabase.from('store_status').upsert({ id: 1, is_open: true });
-    await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen is now OPEN*. AI customer ordering enabled.');
+    await sendWhatsAppMessage(senderNumber, '🟢 *Kitchen is now OPEN*. AI customer ordering enabled.', instanceName);
     return true;
   }
 
   if (lowerText === '!closekitchen' || lowerText === '!close') {
     await supabase.from('store_status').upsert({ id: 1, is_open: false });
-    await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen is now CLOSED*. AI ordering paused.');
+    await sendWhatsAppMessage(senderNumber, '🔴 *Kitchen is now CLOSED*. AI ordering paused.', instanceName);
     return true;
   }
 
-  // 5. CHANGE ITEM PRICE
   if (lowerText.startsWith('!price ')) {
     const payload = text.substring(7).trim();
     const parts = payload.split('|').map(p => p.trim());
 
     if (parts.length < 2) {
-      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!price Item Name | New Price`\n\n_Example:_ `!price Jollof Rice | 4500`');
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!price Item Name | New Price`', instanceName);
       return true;
     }
 
@@ -141,7 +129,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     const newPrice = parseFloat(priceStr.replace(/[^0-9.]/g, ''));
 
     if (isNaN(newPrice)) {
-      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Amount*. Please provide a valid numeric price.');
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Amount*. Please provide a valid numeric price.', instanceName);
       return true;
     }
 
@@ -152,20 +140,19 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
       .select();
 
     if (error || !data || data.length === 0) {
-      await sendWhatsAppMessage(senderNumber, `❌ Could not find item matching "*${itemName}*" in database.`);
+      await sendWhatsAppMessage(senderNumber, `❌ Could not find item matching "*${itemName}*" in database.`, instanceName);
     } else {
-      await sendWhatsAppMessage(senderNumber, `✅ Price for *${data[0].name}* updated to ₦${newPrice.toLocaleString()}!`);
+      await sendWhatsAppMessage(senderNumber, `✅ Price for *${data[0].name}* updated to ₦${newPrice.toLocaleString()}!`, instanceName);
     }
     return true;
   }
 
-  // 6. ADD NEW MENU ITEM
   if (lowerText.startsWith('!additem ')) {
     const payload = text.substring(9).trim();
     const parts = payload.split('|').map(p => p.trim());
 
     if (parts.length < 3) {
-      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!additem Item Name | Category | Price`\n\n_Example:_ `!additem Grilled Catfish | Seafood | 6000`');
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Format*\nUse: `!additem Item Name | Category | Price`', instanceName);
       return true;
     }
 
@@ -173,7 +160,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     const price = parseFloat(priceStr.replace(/[^0-9.]/g, ''));
 
     if (isNaN(price)) {
-      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Amount*. Please provide a valid numeric price.');
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Amount*.', instanceName);
       return true;
     }
 
@@ -182,14 +169,13 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
       .insert([{ name, category, price, is_available: true }]);
 
     if (error) {
-      await sendWhatsAppMessage(senderNumber, `❌ Error adding item: ${error.message}`);
+      await sendWhatsAppMessage(senderNumber, `❌ Error adding item: ${error.message}`, instanceName);
     } else {
-      await sendWhatsAppMessage(senderNumber, `✅ Added *${name}* (${category}) at ₦${price.toLocaleString()} to live menu!`);
+      await sendWhatsAppMessage(senderNumber, `✅ Added *${name}* (${category}) at ₦${price.toLocaleString()} to live menu!`, instanceName);
     }
     return true;
   }
 
-  // 7. TOGGLE SOLDOUT
   if (lowerText.startsWith('!soldout ')) {
     const itemName = text.substring(9).trim();
     const { data, error } = await supabase
@@ -199,14 +185,13 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
       .select();
 
     if (error || !data || data.length === 0) {
-      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`);
+      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`, instanceName);
     } else {
-      await sendWhatsAppMessage(senderNumber, `🚫 *${data[0].name}* is now marked as Sold Out.`);
+      await sendWhatsAppMessage(senderNumber, `🚫 *${data[0].name}* is now marked as Sold Out.`, instanceName);
     }
     return true;
   }
 
-  // 8. TOGGLE AVAILABLE
   if (lowerText.startsWith('!available ')) {
     const itemName = text.substring(11).trim();
     const { data, error } = await supabase
@@ -216,25 +201,24 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
       .select();
 
     if (error || !data || data.length === 0) {
-      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`);
+      await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`, instanceName);
     } else {
-      await sendWhatsAppMessage(senderNumber, `✅ *${data[0].name}* is back on the live menu.`);
+      await sendWhatsAppMessage(senderNumber, `✅ *${data[0].name}* is back on the live menu.`, instanceName);
     }
     return true;
   }
 
-  // 9. TOGGLE HUMAN / BOT MODE
   if (lowerText.startsWith('!human ')) {
     const targetPhone = text.substring(7).trim().replace(/\D/g, '');
     await supabase.from('user_states').upsert({ phone: targetPhone, mode: 'human' });
-    await sendWhatsAppMessage(senderNumber, `👤 AI paused for user *${targetPhone}*. You can now chat directly.`);
+    await sendWhatsAppMessage(senderNumber, `👤 AI paused for user *${targetPhone}*. You can now chat directly.`, instanceName);
     return true;
   }
 
   if (lowerText.startsWith('!bot ')) {
     const targetPhone = text.substring(5).trim().replace(/\D/g, '');
     await supabase.from('user_states').upsert({ phone: targetPhone, mode: 'bot' });
-    await sendWhatsAppMessage(senderNumber, `🤖 AI resumed for user *${targetPhone}*.`);
+    await sendWhatsAppMessage(senderNumber, `🤖 AI resumed for user *${targetPhone}*.`, instanceName);
     return true;
   }
 

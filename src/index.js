@@ -95,14 +95,14 @@ app.post('/webhook/whatsapp', async (req, res) => {
         
       } catch (audioErr) {
         console.error("❌ Audio processing failed:", audioErr);
-        await sendWhatsAppMessage(senderNumber, "I couldn't quite hear that. Could you please type your order instead?");
+        await sendWhatsAppMessage(senderNumber, "I couldn't quite hear that. Could you please type your order instead?", instance);
         return;
       }
     }
 
     if (!isFromMe && textMessage && senderNumber !== 'status@broadcast') {
       
-      const isAdminHandled = await handleAdminCommand(senderNumber, textMessage, messageData);
+      const isAdminHandled = await handleAdminCommand(senderNumber, textMessage, messageData, instance);
       
       if (isAdminHandled) return; 
 
@@ -119,7 +119,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
         if (storeStatus && storeStatus.is_open === false) {
           const closedMessage = "So sorry, but Esthy's Spicy Kitchen is currently closed! 🛑 We aren't taking orders right now.";
-          await sendWhatsAppMessage(senderNumber, closedMessage);
+          await sendWhatsAppMessage(senderNumber, closedMessage, instance);
           return;
         }
 
@@ -248,7 +248,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
         // 4. Handle Direct Bank Transfer Claimed
         if (aiResponse.includes('[BANK_TRANSFER_CLAIMED]')) {
           const cleanResponse = aiResponse.replace('[BANK_TRANSFER_CLAIMED]', '').trim();
-          await sendWhatsAppMessage(senderNumber, cleanResponse);
+          await sendWhatsAppMessage(senderNumber, cleanResponse, instance);
           await saveChatMessage(senderNumber, 'model', cleanResponse);
 
           const orderCode = generateShortOrderCode();
@@ -292,13 +292,13 @@ ${foodItems}
 \`!confirm ${orderCode}\``;
 
             for (const phone of kitchenPhones) {
-              if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerAlert);
+              if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerAlert, instance);
             }
           }
           return;
         }
 
-        await sendWhatsAppMessage(senderNumber, aiResponse);
+        await sendWhatsAppMessage(senderNumber, aiResponse, instance);
         await saveChatMessage(senderNumber, 'model', aiResponse);
 
       } catch (error) {
@@ -307,7 +307,7 @@ ${foodItems}
         const fallbackMessage = "We are experiencing a brief network delay with our system. ⏳ A staff member has been notified and will be right with you!";
         
         try {
-          await sendWhatsAppMessage(senderNumber, fallbackMessage);
+          await sendWhatsAppMessage(senderNumber, fallbackMessage, instance);
         } catch (sendErr) {
           console.error('❌ Failed to send customer fallback message:', sendErr.message);
         }
@@ -327,7 +327,7 @@ An issue occurred while processing a message for customer:
 👉 *Action Needed:* Please check in with the customer manually or reply \`!human ${cleanCustomer}\` to take over.`;
 
           for (const phone of kitchenPhones) {
-             if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerErrorAlert);
+             if (phone.trim()) await sendWhatsAppMessage(phone.trim(), managerErrorAlert, instance);
           }
         }
       }
