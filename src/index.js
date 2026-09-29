@@ -230,7 +230,7 @@ CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE
 
         if (paymentMatch) {
           const finalAmount = secureTotalAmount > 0 ? secureTotalAmount : parseInt(paymentMatch[1], 10);
-          const paymentUrl = await generatePaymentLink(finalAmount, senderNumber, parsedCartData, deliveryAddress);
+          const paymentUrl = await generatePaymentLink(finalAmount, senderNumber, parsedCartData, deliveryAddress, instance);
           
           if (paymentUrl) {
             aiResponse = aiResponse.replace(
@@ -359,8 +359,10 @@ app.post('/webhook/paystack', async (req, res) => {
     const amount = data.amount / 100;
     const customerEmail = data.customer?.email;
     const customerPhone = data.metadata?.customer_phone;
-    
     const cartSummary = data.metadata?.cart_data || []; 
+    
+    // 👈 NEW: Extract the exact bot instance that generated this link
+    const activeInstance = data.metadata?.instance_name || process.env.EVOLUTION_INSTANCE_NAME;
     
     let deliveryAddress = data.metadata?.delivery_address;
 
@@ -372,18 +374,18 @@ app.post('/webhook/paystack', async (req, res) => {
                      (!deliveryAddress && !cartSummary.some(i => i.item_name.toLowerCase().includes('delivery'))) ||
                      deliveryAddress.toLowerCase().includes('pickup');
 
-    console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref:${reference})`);
+    console.log(`🎉 Successful payment confirmed: ₦${amount} (Ref: ${reference})`);
 
     const orderData = { reference, customerPhone, amount, customerEmail };
-
     const result = await createCompleteOrder(orderData, cartSummary);
     if (!result.success) return;
 
     if (customerPhone) {
-      const receiptMessage = `✅ *SYSTEM ALERT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference:${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
+      const receiptMessage = `✅ *SYSTEM ALERT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
       
       try {
-        await sendWhatsAppMessage(customerPhone, receiptMessage);
+        // 👈 NEW: Pass activeInstance to send the receipt from the correct bot
+        await sendWhatsAppMessage(customerPhone, receiptMessage, activeInstance);
         await saveChatMessage(customerPhone, 'model', receiptMessage);
       } catch (err) {
         console.error('❌ Error sending WhatsApp receipt:', err);
@@ -403,24 +405,11 @@ app.post('/webhook/paystack', async (req, res) => {
         ? '📍 *Fulfillment:* Customer will pick up at restaurant' 
         : `📍 *Delivery Address:* ${deliveryAddress}`;
 
-      const kitchenAlert = 
-`👨‍🍳 *NEW PAID ORDER RECEIVED!*
------------------------------------
-${fulfillmentTypeHeader}
-*Ref:* ${reference}
-*Customer Phone:* wa.me/${customerPhone?.replace(/[^0-9]/g, '')} (${customerPhone})
-
-${addressDisplay}
-
-🍲 *ITEMS TO PREPARE:*
-${foodItemsToPrepare || '• See order reference in DB'}
-
-💰 *Total Paid:* ₦${amount.toLocaleString()}
------------------------------------
-🔥 *Status:* Payment Verified. Start preparation!`;
+      const kitchenAlert = `👨‍🍳 *NEW PAID ORDER RECEIVED!*\n-----------------------------------\n${fulfillmentTypeHeader}\n*Ref:* ${reference}\n*Customer Phone:* wa.me/${customerPhone?.replace(/[^0-9]/g, '')} (${customerPhone})\n\n${addressDisplay}\n\n🍲 *ITEMS TO PREPARE:*\n${foodItemsToPrepare || '• See order reference in DB'}\n\n💰 *Total Paid:* ₦${amount.toLocaleString()}\n-----------------------------------\n🔥 *Status:* Payment Verified. Start preparation!`;
 
       for (const phone of kitchenPhones) {
-         if (phone.trim()) await sendWhatsAppMessage(phone.trim(), kitchenAlert);
+         // 👈 NEW: Pass activeInstance to send alerts from the correct bot
+         if (phone.trim()) await sendWhatsAppMessage(phone.trim(), kitchenAlert, activeInstance);
       }
     }
   }

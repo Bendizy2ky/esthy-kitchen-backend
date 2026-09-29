@@ -1,5 +1,5 @@
 // src/services/paystackService.js
-export async function generatePaymentLink(amountInNaira, customerPhone, cartData = null, deliveryAddress = "", email = "orders@esthyskitchen.com") {
+export async function generatePaymentLink(amountInNaira, customerPhone, cartData = null, deliveryAddress = "", instanceName = "", email = "orders@esthyskitchen.com") {
   const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
   const botWhatsappNumber = process.env.BOT_WHATSAPP_NUMBER || "2349117590168"; 
   const serverUrl = process.env.SERVER_URL; // e.g., https://esthy-kitchen-backend.onrender.com
@@ -28,6 +28,7 @@ export async function generatePaymentLink(amountInNaira, customerPhone, cartData
           customer_phone: customerPhone,
           cart_data: cartData,
           delivery_address: deliveryAddress, // Attached to core metadata
+          instance_name: instanceName,
           custom_fields: [
             {
               display_name: "Delivery Address",
