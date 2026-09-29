@@ -123,10 +123,11 @@ app.post('/webhook/whatsapp', async (req, res) => {
           return;
         }
 
+        const cleanPhone = senderNumber.replace(/\D/g, '');
         const { data: userState, error: userErr } = await supabase
           .from('user_states')
-          .select('mode')
-          .eq('phone', senderNumber.replace(/\D/g, ''))
+          .select('mode, current_cart, current_total, delivery_address')
+          .eq('phone', cleanPhone)
           .single();
 
         if (userErr && userErr.code !== 'PGRST116') { 
@@ -228,12 +229,43 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
           aiResponse = aiResponse.replace(addressMatch[0], '').trim();
         }
 
+        // Persist new cart and address details without overwriting saved values
+        // when the AI only returns one of them in this turn.
+        const hasNewCart = parsedCartData && parsedCartData.length > 0 && secureTotalAmount > 0;
+        if (hasNewCart || deliveryAddress) {
+          const { error: stateSaveError } = await supabase.from('user_states').upsert({
+            phone: cleanPhone,
+            current_cart: hasNewCart ? parsedCartData : (userState?.current_cart || []),
+            current_total: hasNewCart ? secureTotalAmount : (userState?.current_total || 0),
+            delivery_address: deliveryAddress || userState?.delivery_address || null,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'phone' });
+
+          if (stateSaveError) throw new Error(`Supabase User State Save Error: ${stateSaveError.message}`);
+        }
+
+        const { data: activeState, error: activeStateError } = await supabase
+          .from('user_states')
+          .select('current_cart, current_total, delivery_address')
+          .eq('phone', cleanPhone)
+          .maybeSingle();
+
+        if (activeStateError) throw new Error(`Supabase User State Fetch Error: ${activeStateError.message}`);
+
+        const finalCartData = (parsedCartData && parsedCartData.length > 0)
+          ? parsedCartData
+          : (activeState?.current_cart || []);
+        const finalTotalAmount = secureTotalAmount > 0
+          ? secureTotalAmount
+          : (activeState?.current_total || 0);
+        const finalAddress = deliveryAddress || activeState?.delivery_address || 'Not specified';
+
         // 3. Handle Paystack Online Link
         const paymentMatch = aiResponse.match(/\[GENERATE_LINK:\s*(\d+)\]/);
 
         if (paymentMatch) {
-          const finalAmount = secureTotalAmount > 0 ? secureTotalAmount : parseInt(paymentMatch[1], 10);
-          const paymentUrl = await generatePaymentLink(finalAmount, senderNumber, parsedCartData, deliveryAddress, instance);
+          const finalAmount = finalTotalAmount > 0 ? finalTotalAmount : parseInt(paymentMatch[1], 10);
+          const paymentUrl = await generatePaymentLink(finalAmount, senderNumber, finalCartData, finalAddress, instance);
           
           if (paymentUrl) {
             aiResponse = aiResponse.replace(
@@ -255,24 +287,27 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
           await saveChatMessage(senderNumber, 'model', cleanResponse);
 
           const orderCode = generateShortOrderCode();
-          const cartSummary = parsedCartData || [];
-          
-          const finalAmount = secureTotalAmount > 0 
-            ? secureTotalAmount 
-            : cartSummary.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
-
+          const cartSummary = finalCartData;
           const { error: pendingOrderError } = await supabase.from('pending_orders').insert([{
             order_code: orderCode,
             customer_phone: senderNumber,
-            amount: finalAmount,
+            amount: finalTotalAmount,
             cart_data: cartSummary,
-            delivery_address: deliveryAddress
+            delivery_address: finalAddress
           }]);
 
           if (pendingOrderError) {
             console.error('❌ Error saving pending order:', pendingOrderError);
             return;
           }
+
+          const { error: clearStateError } = await supabase.from('user_states').update({
+            current_cart: [],
+            current_total: 0,
+            delivery_address: null
+          }).eq('phone', cleanPhone);
+
+          if (clearStateError) throw new Error(`Supabase User State Clear Error: ${clearStateError.message}`);
 
           // Loop through all kitchen numbers for Bank Transfer alerts
           const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
@@ -290,8 +325,8 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
 -----------------------------------
 *Order Ref:* \`${orderCode}\`
 *Customer:* wa.me/${senderNumber.replace(/\D/g, '')} (${senderNumber})
-*Amount:* ₦${finalAmount.toLocaleString()}
-📍 *Address:* ${deliveryAddress || 'Not specified'}
+*Amount:* ₦${finalTotalAmount.toLocaleString()}
+📍 *Address:* ${finalAddress}
 
 🍲 *ITEMS TO PREPARE:*
 ${foodItems}
