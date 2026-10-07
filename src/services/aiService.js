@@ -166,40 +166,59 @@ export async function generateAIResponse(promptContext) {
   throw new Error('All Groq AI models failed to generate a response.');
 }
 
-export async function extractReceiptAmount(imageBase64) {
-  try {
-    const response = await groq.chat.completions.create({
-      model: 'llama-3.2-11b-vision-preview',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `You are a strict receipt scanning system. Extract the final total amount paid from this bank transfer receipt.
-              Output ONLY a valid JSON object in this exact format: {"amount_paid": 5000}.
-              If the image is blurry, cropped, or you cannot confidently read the amount, output: {"amount_paid": null}.
-              Strip out all currency symbols (like ₦) and commas. Do not include any markdown, explanations, or extra text.`
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:image/jpeg;base64,${imageBase64}`
-              }
-            }
-          ]
-        }
-      ],
-      temperature: 0,
-      response_format: { type: 'json_object' }
-    });
+const GROQ_VISION_MODELS = [
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'llama-3.2-11b-vision-preview',
+  'llama-3.2-90b-vision-preview'
+];
 
-    const result = JSON.parse(response.choices[0].message.content);
-    return result.amount_paid;
-  } catch (error) {
-    console.error('Groq Vision API Error:', error);
-    return null;
+export async function extractReceiptAmount(imageBase64) {
+  const cleanBase64 = imageBase64.replace(/^data:image\/[^;]+;base64,/i, '');
+
+  for (const modelName of GROQ_VISION_MODELS) {
+    try {
+      const response = await groq.chat.completions.create({
+        model: modelName,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `You are an automated receipt scanner for Nigerian bank transfer receipts (OPay, PalmPay, Moniepoint, Kuda, FirstBank, GTB, Zenith, etc.).
+Extract the primary numeric transfer amount paid shown on this receipt.
+Output ONLY a valid JSON object in this exact format: {"amount_paid": 1500}.
+If the image is not a receipt or completely unreadable, output: {"amount_paid": null}.
+Strip out all currency symbols (₦, NGN, N) and commas. Output pure integers.`
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/jpeg;base64,${cleanBase64}`
+                }
+              }
+            ]
+          }
+        ],
+        temperature: 0,
+        response_format: { type: 'json_object' }
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (content) {
+        const result = JSON.parse(content);
+        if (result && result.amount_paid !== undefined) {
+          console.log(`✅ Groq Vision (${modelName}) extracted amount: ₦${result.amount_paid}`);
+          return result.amount_paid;
+        }
+      }
+    } catch (error) {
+      console.warn(`⚠️ Groq Vision API Error on [${modelName}]:`, error.message);
+    }
   }
+
+  console.error('❌ All Groq Vision models failed to parse receipt.');
+  return null;
 }
 
 export async function transcribeAudioWithGroq(audioBuffer) {
