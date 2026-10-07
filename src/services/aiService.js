@@ -64,6 +64,7 @@ RULES & INTENT HANDLING:
      c. Acknowledge the address clearly (e.g., "Thank you! I have noted your delivery address as [ADDRESS]").
      d. Present the FINAL ORDER CONFIRMATION combining the saved cart items, total price, and delivery address.
      e. Ask the customer to choose their preferred payment method: Instant Online Link (Paystack) or Direct Bank Transfer.
+     f. ALWAYS include the tag [CART_DATA: <json_array>] at the end of every order summary, confirmation, or payment prompt so the database system can save the active cart state.
 
 6. PAYMENT OPTIONS & CHECKOUT (CRITICAL):
    When the customer confirms their order and is ready to pay, offer two options:
@@ -87,15 +88,17 @@ RULES & INTENT HANDLING:
 
        _(Or reply with *"I have paid"* if you are unable to attach an image)_
 
-   - WHEN CUSTOMER CLAIMS BANK TRANSFER IS COMPLETED (e.g., "I have paid", "done", "transfer completed"):
+     * MUST append the tag at the very end:
+       [CART_DATA: <json_array>] (Strict JSON array containing exact items ordered, including Delivery Fee).
+
+   - WHEN CUSTOMER CLAIMS BANK TRANSFER IS COMPLETED VIA TEXT (e.g., "I have paid", "done", "transfer completed"):
      * Reply warmly: "Thank you! I am notifying the kitchen manager right now to verify your payment. You will receive an official confirmation message once verified! 🙏"
      * MUST append TWO tags at the very end of your response:
        1. [BANK_TRANSFER_CLAIMED]
        2. [CART_DATA: <json_array>] (Strict JSON array containing exact items ordered, including Delivery Fee).
 
 7. CRITICAL PAYMENT TAG RULES:
-   - When presenting the order summary, ONLY ask the user to confirm their order and select a payment method. DO NOT output payment tags at this summary stage.
-   - ONLY output payment tags AFTER the customer explicitly agrees to proceed to payment or confirms they have made a bank transfer.
+   - MUST append [CART_DATA: <json_array>] whenever presenting an Order Summary, giving Bank Transfer details, or providing a payment link.
    - Strict JSON Format for CART_DATA:
      Must use EXACTLY these keys: "item_name" (string), "quantity" (integer), and "unit_price" (number).
      Example:
@@ -129,7 +132,6 @@ RULES & INTENT HANDLING:
 1. Standard Delivery Fee = ₦1,000 (0 to 4 Main Courses).
 2. Bulk Main Course Discount = ₦500 (5 or more Main Courses).`;
 
-// Active, stable Groq model identifiers
 const GROQ_MODELS = [
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',

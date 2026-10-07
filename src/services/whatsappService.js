@@ -1,3 +1,4 @@
+// src/services/whatsappService.js
 import axios from 'axios';
 import dotenv from 'dotenv';
 
@@ -38,13 +39,15 @@ export async function sendWhatsAppMedia(phoneNumber, base64Image, caption, dynam
   const apiKey = process.env.EVOLUTION_API_KEY;
   const activeInstance = dynamicInstanceName || process.env.EVOLUTION_INSTANCE_NAME;
 
+  const cleanBase64 = base64Image.replace(/^data:image\/[^;]+;base64,/i, '');
+
   try {
     const response = await axios.post(
       `${evolutionApiUrl}/message/sendMedia/${activeInstance}`,
       {
         number: phoneNumber,
         mediatype: 'image',
-        media: `data:image/jpeg;base64,${base64Image}`,
+        media: `data:image/jpeg;base64,${cleanBase64}`,
         caption
       },
       {
@@ -62,10 +65,15 @@ export async function sendWhatsAppMedia(phoneNumber, base64Image, caption, dynam
 }
 
 export async function forwardMediaToManager(base64Image, captionText, dynamicInstanceName) {
-  const managerNumbers = [
+  const rawList = [
     process.env.KITCHEN_MANAGER_NUMBER_1,
-    process.env.KITCHEN_MANAGER_NUMBER_2
-  ].map(number => number?.trim()).filter(Boolean);
+    process.env.KITCHEN_MANAGER_NUMBER_2,
+    ...(process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [])
+  ];
+
+  const managerNumbers = [...new Set(
+    rawList.map(number => number?.replace(/\D/g, '')).filter(Boolean)
+  )];
 
   if (managerNumbers.length === 0) {
     console.error('Failed to send receipt to Kitchen Manager: no manager numbers are configured.');
@@ -102,7 +110,7 @@ export async function downloadWhatsAppMedia(messageKey, dynamicInstanceName) {
 
   const base64Data = response.data.base64;
   if (!base64Data) {
-    throw new Error("Failed to retrieve base64 audio data from Evolution API.");
+    throw new Error("Failed to retrieve base64 audio/media data from Evolution API.");
   }
 
   return Buffer.from(base64Data.split(',')[1] || base64Data, 'base64');

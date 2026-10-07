@@ -74,7 +74,8 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const imageMessage = messageData.message?.imageMessage;
     if (!isFromMe && imageMessage && senderNumber && senderNumber !== 'status@broadcast') {
       try {
-        const cleanPhone = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
+        const cleanPhone = senderNumber.replace(/\D/g, '');
+        
         const { data: userState, error: userStateError } = await supabase
           .from('user_states')
           .select('current_cart, current_total, delivery_address')
@@ -109,10 +110,10 @@ app.post('/webhook/whatsapp', async (req, res) => {
           const deficit = cartTotal - amountPaid;
           await sendWhatsAppMessage(
             senderNumber,
-            `I received your receipt for ₦${amountPaid.toLocaleString()}, but your order total is ₦${cartTotal.toLocaleString()}. Please transfer the outstanding balance of ₦${deficit.toLocaleString()} so we can process your order.`,
+            `I received your receipt for ₦${amountPaid.toLocaleString()}, but your order total is ₦${cartTotal.toLocaleString()}. Please transfer the outstanding balance of *₦${deficit.toLocaleString()}* so we can process your order.`,
             instance
           );
-          return;
+          return; // State remains saved so customer can upload new receipt after paying balance
         }
 
         const needsManualReview = amountPaid === null;
@@ -136,13 +137,13 @@ app.post('/webhook/whatsapp', async (req, res) => {
         if (clearStateError) console.error('❌ Failed to clear receipt order state:', clearStateError.message);
 
         const managerCaption = needsManualReview
-          ? `Manual receipt review needed for ${senderNumber}. Expected order total: ₦${cartTotal.toLocaleString()}. Reply #confirm ${orderCode} after verifying the transfer.`
-          : `✅ Payment of ₦${amountPaid.toLocaleString()} meets the order total of ₦${cartTotal.toLocaleString()} for ${senderNumber}.\n\nOrder Details: ${JSON.stringify(userState.current_cart)}\n\nReply #confirm ${orderCode} to approve the order.`;
+          ? `⚠️ Manual receipt review needed for ${senderNumber}.\nExpected order total: ₦${cartTotal.toLocaleString()}.\n\nReply #confirm ${orderCode} after manually verifying the transfer.`
+          : `✅ Payment of ₦${amountPaid.toLocaleString()} verified for${senderNumber}.\n\nOrder Details:\n${JSON.stringify(userState.current_cart, null, 2)}\n\nReply #confirm ${orderCode} to approve the order.`;
 
         if (needsManualReview) {
           await sendWhatsAppMessage(senderNumber, "I received your image, but I couldn't automatically read the final amount. I have forwarded it to the Kitchen Manager for manual review! 🙏", instance);
         } else {
-          await sendWhatsAppMessage(senderNumber, 'Payment amount received! 🎉 I am notifying the kitchen manager to verify your payment. You will receive an official confirmation message shortly.', instance);
+          await sendWhatsAppMessage(senderNumber, 'Payment verified! 🎉 I am notifying the kitchen manager right now to start preparing your order. You will receive an official confirmation shortly.', instance);
         }
 
         await forwardMediaToManager(base64Image, managerCaption, instance);
@@ -168,10 +169,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
       try {
         console.log(`🎵 Audio message detected via [${instance}] from${senderNumber}, downloading...`);
         
-        // Pass the dynamic instance to the download function
         const audioBuffer = await downloadWhatsAppMedia(messageData.key, instance); 
-        
-        // Transcribe using Groq Whisper
         textMessage = await transcribeAudioWithGroq(audioBuffer);
         console.log(`🎤 Transcribed Voice Note: "${textMessage}"`);
         
@@ -210,9 +208,9 @@ app.post('/webhook/whatsapp', async (req, res) => {
           .from('user_states')
           .select('mode, current_cart, current_total, delivery_address')
           .eq('phone', cleanPhone)
-          .single();
+          .maybeSingle();
 
-        if (userErr && userErr.code !== 'PGRST116') { 
+        if (userErr) { 
           console.error('Supabase User State Error:', userErr.message);
         }
 
@@ -250,7 +248,7 @@ Customer's New Message: "${textMessage}"
 Today's Live Menu:
 ${formattedMenu || 'EMPTY'}
 
-CRITICAL INSTRUCTION: If you are finalizing the order and generating a [GENERATE_LINK: <amount>] or [BANK_TRANSFER_CLAIMED] tag in this response, you MUST also output the customer's delivery address (extracted from the chat history) using the format [ADDRESS: <Full Delivery Address>]. If it is a pickup order, output [ADDRESS: Self-Pickup].
+CRITICAL INSTRUCTION: If you are finalizing the order, presenting an order summary, or providing payment information (Paystack or Bank Transfer), you MUST output the customer's delivery address using [ADDRESS: <Full Delivery Address>] (or [ADDRESS: Self-Pickup]), and you MUST output [CART_DATA: <json_array>] containing all active cart items and line amounts.
 
 If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it in the menu, you MUST explicitly tell them the wait time and ask if they are okay with waiting BEFORE you generate a [GENERATE_LINK] or [BANK_TRANSFER_CLAIMED] tag.
         `;
@@ -311,8 +309,7 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
           aiResponse = aiResponse.replace(addressMatch[0], '').trim();
         }
 
-        // Persist new cart and address details without overwriting saved values
-        // when the AI only returns one of them in this turn.
+        // Persist new cart and address details in user_states
         const hasNewCart = parsedCartData && parsedCartData.length > 0 && secureTotalAmount > 0;
         if (hasNewCart || deliveryAddress) {
           const { error: stateSaveError } = await supabase.from('user_states').upsert({
@@ -362,7 +359,7 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
           }
         }
 
-        // 4. Handle Direct Bank Transfer Claimed
+        // 4. Handle Direct Bank Transfer Claimed via text
         if (aiResponse.includes('[BANK_TRANSFER_CLAIMED]')) {
           const cleanResponse = aiResponse.replace('[BANK_TRANSFER_CLAIMED]', '').trim();
           await sendWhatsAppMessage(senderNumber, cleanResponse, instance);
@@ -391,7 +388,6 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
 
           if (clearStateError) throw new Error(`Supabase User State Clear Error: ${clearStateError.message}`);
 
-          // Loop through all kitchen numbers for Bank Transfer alerts
           const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
           
           if (kitchenPhones.length > 0) {
@@ -438,7 +434,6 @@ ${foodItems}
           console.error('❌ Failed to send customer fallback message:', sendErr.message);
         }
 
-        // Loop through all kitchen numbers for Error alerts
         const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
         if (kitchenPhones.length > 0) {
           const cleanCustomer = senderNumber.replace(/\D/g, '');
@@ -486,8 +481,6 @@ app.post('/webhook/paystack', async (req, res) => {
     const customerEmail = data.customer?.email;
     const customerPhone = data.metadata?.customer_phone;
     const cartSummary = data.metadata?.cart_data || []; 
-    
-    // 👈 NEW: Extract the exact bot instance that generated this link
     const activeInstance = data.metadata?.instance_name || process.env.EVOLUTION_INSTANCE_NAME;
     
     let deliveryAddress = data.metadata?.delivery_address;
@@ -510,7 +503,6 @@ app.post('/webhook/paystack', async (req, res) => {
       const receiptMessage = `✅ *SYSTEM ALERT: Payment Confirmed!*\n\nAmount: ₦${amount.toLocaleString()}\nReference: ${reference}\n\nThank you! Your payment has been securely verified. Your order is now being processed and sent to the kitchen. 🍲🔥`;
       
       try {
-        // 👈 NEW: Pass activeInstance to send the receipt from the correct bot
         await sendWhatsAppMessage(customerPhone, receiptMessage, activeInstance);
         await saveChatMessage(customerPhone, 'model', receiptMessage);
       } catch (err) {
@@ -518,7 +510,6 @@ app.post('/webhook/paystack', async (req, res) => {
       }
     }
 
-    // Loop through all kitchen numbers for Paystack alerts
     const kitchenPhones = process.env.KITCHEN_PHONE_NUMBERS ? process.env.KITCHEN_PHONE_NUMBERS.split(',') : [];
     if (kitchenPhones.length > 0) {
       const foodItemsToPrepare = cartSummary
@@ -537,7 +528,6 @@ app.post('/webhook/paystack', async (req, res) => {
       const kitchenAlert = `👨‍🍳 *NEW PAID ORDER RECEIVED!*\n-----------------------------------\n${fulfillmentTypeHeader}\n*Ref:* ${reference}\n*Customer Phone:* wa.me/${customerPhone?.replace(/[^0-9]/g, '')} (${customerPhone})\n\n${addressDisplay}\n\n🍲 *ITEMS TO PREPARE:*\n${foodItemsToPrepare || '• See order reference in DB'}\n\n💰 *Total Paid:* ₦${amount.toLocaleString()}\n-----------------------------------\n🔥 *Status:* Payment Verified. Start preparation!`;
 
       for (const phone of kitchenPhones) {
-         // 👈 NEW: Pass activeInstance to send alerts from the correct bot
          if (phone.trim()) await sendWhatsAppMessage(phone.trim(), kitchenAlert, activeInstance);
       }
     }
