@@ -159,6 +159,42 @@ export async function generateAIResponse(promptContext) {
   throw new Error('All Groq AI models failed to generate a response.');
 }
 
+export async function extractReceiptAmount(imageBase64) {
+  try {
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.2-11b-vision-preview',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `You are a strict receipt scanning system. Extract the final total amount paid from this bank transfer receipt.
+              Output ONLY a valid JSON object in this exact format: {"amount_paid": 5000}.
+              If the image is blurry, cropped, or you cannot confidently read the amount, output: {"amount_paid": null}.
+              Strip out all currency symbols (like ₦) and commas. Do not include any markdown, explanations, or extra text.`
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/jpeg;base64,${imageBase64}`
+              }
+            }
+          ]
+        }
+      ],
+      temperature: 0,
+      response_format: { type: 'json_object' }
+    });
+
+    const result = JSON.parse(response.choices[0].message.content);
+    return result.amount_paid;
+  } catch (error) {
+    console.error('Groq Vision API Error:', error);
+    return null;
+  }
+}
+
 export async function transcribeAudioWithGroq(audioBuffer) {
   const tempFilePath = path.join(os.tmpdir(), `voice_note_${Date.now()}.ogg`);
   fs.writeFileSync(tempFilePath, audioBuffer);

@@ -3,8 +3,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { supabase } from './config/supabase.js';
-import { generateAIResponse, SYSTEM_PROMPT, transcribeAudioWithGroq } from './services/aiService.js'; 
-import { sendWhatsAppMessage, downloadWhatsAppMedia } from './services/whatsappService.js';
+import { generateAIResponse, SYSTEM_PROMPT, transcribeAudioWithGroq, extractReceiptAmount } from './services/aiService.js'; 
+import { sendWhatsAppMessage, forwardMediaToManager, downloadWhatsAppMedia } from './services/whatsappService.js';
 import { getChatHistory, saveChatMessage } from './services/chatService.js';
 import { generatePaymentLink } from './services/paystackService.js';
 import { createCompleteOrder } from './services/orderService.js';
@@ -70,6 +70,88 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const messageData = data;
     const senderNumber = messageData.key?.remoteJid;
     const isFromMe = messageData.key?.fromMe;
+
+    const imageMessage = messageData.message?.imageMessage;
+    if (!isFromMe && imageMessage && senderNumber && senderNumber !== 'status@broadcast') {
+      try {
+        const cleanPhone = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
+        const { data: userState, error: userStateError } = await supabase
+          .from('user_states')
+          .select('current_cart, current_total, delivery_address')
+          .eq('phone', cleanPhone)
+          .maybeSingle();
+
+        if (userStateError) throw new Error(`Supabase User State Fetch Error: ${userStateError.message}`);
+
+        const cartTotal = Number(userState?.current_total) || 0;
+        if (!userState || cartTotal <= 0 || !Array.isArray(userState.current_cart) || userState.current_cart.length === 0) {
+          await sendWhatsAppMessage(senderNumber, "I received an image, but you don't have an active order pending payment right now. Would you like to see the menu?", instance);
+          return;
+        }
+
+        await sendWhatsAppMessage(senderNumber, 'I have received your receipt. Give me a moment to verify the payment... ⏳', instance);
+
+        let base64Image = messageData.message?.base64 || imageMessage.base64;
+        if (!base64Image) {
+          const imageBuffer = await downloadWhatsAppMedia(messageData.key, instance);
+          base64Image = imageBuffer.toString('base64');
+        }
+        base64Image = base64Image.replace(/^data:image\/[^;]+;base64,/i, '');
+
+        if (!base64Image) throw new Error('No base64 image data was available for the receipt.');
+
+        const scannedAmount = await extractReceiptAmount(base64Image);
+        const amountPaid = Number.isFinite(Number(scannedAmount)) && scannedAmount !== null
+          ? Number(scannedAmount)
+          : null;
+
+        if (amountPaid !== null && amountPaid < cartTotal) {
+          const deficit = cartTotal - amountPaid;
+          await sendWhatsAppMessage(
+            senderNumber,
+            `I received your receipt for ₦${amountPaid.toLocaleString()}, but your order total is ₦${cartTotal.toLocaleString()}. Please transfer the outstanding balance of ₦${deficit.toLocaleString()} so we can process your order.`,
+            instance
+          );
+          return;
+        }
+
+        const needsManualReview = amountPaid === null;
+        const orderCode = generateShortOrderCode();
+        const { error: pendingOrderError } = await supabase.from('pending_orders').insert([{
+          order_code: orderCode,
+          customer_phone: senderNumber,
+          amount: needsManualReview ? cartTotal : amountPaid,
+          cart_data: userState.current_cart,
+          delivery_address: userState.delivery_address || 'Not provided'
+        }]);
+
+        if (pendingOrderError) throw new Error(`Supabase Pending Order Save Error: ${pendingOrderError.message}`);
+
+        const { error: clearStateError } = await supabase.from('user_states').update({
+          current_cart: [],
+          current_total: 0,
+          delivery_address: null
+        }).eq('phone', cleanPhone);
+
+        if (clearStateError) console.error('❌ Failed to clear receipt order state:', clearStateError.message);
+
+        const managerCaption = needsManualReview
+          ? `Manual receipt review needed for ${senderNumber}. Expected order total: ₦${cartTotal.toLocaleString()}. Reply #confirm ${orderCode} after verifying the transfer.`
+          : `✅ Payment of ₦${amountPaid.toLocaleString()} meets the order total of ₦${cartTotal.toLocaleString()} for ${senderNumber}.\n\nOrder Details: ${JSON.stringify(userState.current_cart)}\n\nReply #confirm ${orderCode} to approve the order.`;
+
+        if (needsManualReview) {
+          await sendWhatsAppMessage(senderNumber, "I received your image, but I couldn't automatically read the final amount. I have forwarded it to the Kitchen Manager for manual review! 🙏", instance);
+        } else {
+          await sendWhatsAppMessage(senderNumber, 'Payment amount received! 🎉 I am notifying the kitchen manager to verify your payment. You will receive an official confirmation message shortly.', instance);
+        }
+
+        await forwardMediaToManager(base64Image, managerCaption, instance);
+      } catch (receiptError) {
+        console.error('❌ Receipt image processing failed:', receiptError);
+        await sendWhatsAppMessage(senderNumber, "I couldn't process that receipt image right now. Please try again or contact the Kitchen Manager for help.", instance);
+      }
+      return;
+    }
     
     let textMessage = 
       messageData.message?.conversation || 
