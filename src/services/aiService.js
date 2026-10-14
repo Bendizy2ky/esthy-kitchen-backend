@@ -132,10 +132,11 @@ RULES & INTENT HANDLING:
 1. Standard Delivery Fee = ₦1,000 (0 to 4 Main Courses).
 2. Bulk Main Course Discount = ₦500 (5 or more Main Courses).`;
 
+// Updated high-limit Groq text models
 const GROQ_MODELS = [
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'qwen/qwen3.8-27b'
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+  'mixtral-8x7b-32768'
 ];
 
 export async function generateAIResponse(promptContext) {
@@ -166,58 +167,60 @@ export async function generateAIResponse(promptContext) {
   throw new Error('All Groq AI models failed to generate a response.');
 }
 
-const GROQ_VISION_MODELS = [
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'llama-3.2-11b-vision-preview',
-  'llama-3.2-90b-vision-preview'
-];
-
 export async function extractReceiptAmount(imageBase64) {
-  const cleanBase64 = imageBase64.replace(/^data:image\/[^;]+;base64,/i, '');
+  const cleanBase64 = imageBase64.replace(/^data:image\/[^;]+;base64,/i, '').trim();
+  const geminiApiKey = process.env.GEMINI_API_KEY;
 
-  for (const modelName of GROQ_VISION_MODELS) {
+  if (geminiApiKey) {
     try {
-      const response = await groq.chat.completions.create({
-        model: modelName,
-        messages: [
-          {
-            role: 'user',
-            content: [
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
               {
-                type: 'text',
-                text: `You are an automated receipt scanner for Nigerian bank transfer receipts (OPay, PalmPay, Moniepoint, Kuda, FirstBank, GTB, Zenith, etc.).
+                parts: [
+                  {
+                    text: `You are an automated receipt scanner for Nigerian bank transfer receipts (OPay, PalmPay, Moniepoint, Kuda, FirstBank, GTB, Zenith, etc.).
 Extract the primary numeric transfer amount paid shown on this receipt.
 Output ONLY a valid JSON object in this exact format: {"amount_paid": 1500}.
 If the image is not a receipt or completely unreadable, output: {"amount_paid": null}.
-Strip out all currency symbols (₦, NGN, N) and commas. Output pure integers.`
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:image/jpeg;base64,${cleanBase64}`
-                }
+Strip out all currency symbols (₦, NGN, N) and commas. Output pure integers without formatting.`
+                  },
+                  {
+                    inline_data: {
+                      mime_type: 'image/jpeg',
+                      data: cleanBase64
+                    }
+                  }
+                ]
               }
-            ]
-          }
-        ],
-        temperature: 0,
-        response_format: { type: 'json_object' }
-      });
+            ],
+            generationConfig: { response_mime_type: 'application/json' }
+          })
+        }
+      );
 
-      const content = response.choices[0]?.message?.content;
-      if (content) {
-        const result = JSON.parse(content);
-        if (result && result.amount_paid !== undefined) {
-          console.log(`✅ Groq Vision (${modelName}) extracted amount: ₦${result.amount_paid}`);
-          return result.amount_paid;
+      const data = await response.json();
+      const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (responseText) {
+        const result = JSON.parse(responseText);
+        if (result && result.amount_paid !== undefined && result.amount_paid !== null) {
+          const numericAmount = Number(result.amount_paid);
+          console.log(`✅ Gemini Vision extracted amount: ₦${numericAmount}`);
+          return numericAmount;
         }
       }
-    } catch (error) {
-      console.warn(`⚠️ Groq Vision API Error on [${modelName}]:`, error.message);
+    } catch (err) {
+      console.warn('⚠️ Gemini Vision API Error:', err.message);
     }
+  } else {
+    console.error('❌ GEMINI_API_KEY is not configured in environment variables.');
   }
 
-  console.error('❌ All Groq Vision models failed to parse receipt.');
   return null;
 }
 

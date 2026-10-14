@@ -39,7 +39,8 @@ export async function sendWhatsAppMedia(phoneNumber, base64Image, caption, dynam
   const apiKey = process.env.EVOLUTION_API_KEY;
   const activeInstance = dynamicInstanceName || process.env.EVOLUTION_INSTANCE_NAME;
 
-  const cleanBase64 = base64Image.replace(/^data:image\/[^;]+;base64,/i, '');
+  // Clean base64 string completely (remove prefix)
+  const cleanBase64 = base64Image.replace(/^data:image\/[^;]+;base64,/i, '').trim();
 
   try {
     const response = await axios.post(
@@ -47,7 +48,7 @@ export async function sendWhatsAppMedia(phoneNumber, base64Image, caption, dynam
       {
         number: phoneNumber,
         mediatype: 'image',
-        media: `data:image/jpeg;base64,${cleanBase64}`,
+        media: cleanBase64,
         caption
       },
       {
