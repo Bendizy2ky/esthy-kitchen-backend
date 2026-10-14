@@ -132,39 +132,75 @@ RULES & INTENT HANDLING:
 1. Standard Delivery Fee = ₦1,000 (0 to 4 Main Courses).
 2. Bulk Main Course Discount = ₦500 (5 or more Main Courses).`;
 
-// Updated high-limit Groq text models
+// Active, verified Groq models for fallback
 const GROQ_MODELS = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
-  'mixtral-8x7b-32768'
+  'llama-3.1-70b-versatile',
+  'llama3-8b-8192',
+  'llama3-70b-8192'
 ];
 
 export async function generateAIResponse(promptContext) {
-  if (!groq) {
-    throw new Error('GROQ_API_KEY is not configured in environment variables.');
-  }
+  const geminiApiKey = process.env.GEMINI_API_KEY;
 
-  for (const modelName of GROQ_MODELS) {
+  // 1. PRIMARY: Try Gemini 1.5 Flash first (High rate limits, fast, active)
+  if (geminiApiKey) {
     try {
-      const completion = await groq.chat.completions.create({
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: promptContext }
-        ],
-        model: modelName,
-        temperature: 0.2,
-      });
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            system_instruction: {
+              parts: [{ text: SYSTEM_PROMPT }]
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: promptContext }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.2
+            }
+          })
+        }
+      );
 
-      const responseText = completion.choices[0]?.message?.content || '';
+      const data = await response.json();
+      const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (responseText) {
         return responseText;
       }
-    } catch (error) {
-      console.warn(`⚠️ Groq API Error on ${modelName}:`, error.message);
+    } catch (geminiError) {
+      console.warn('⚠️ Primary Gemini Text API Error:', geminiError.message);
     }
   }
 
-  throw new Error('All Groq AI models failed to generate a response.');
+  // 2. SECONDARY: Fallback to active Groq models if Gemini fails
+  if (groq) {
+    for (const modelName of GROQ_MODELS) {
+      try {
+        const completion = await groq.chat.completions.create({
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: promptContext }
+          ],
+          model: modelName,
+          temperature: 0.2,
+        });
+
+        const responseText = completion.choices[0]?.message?.content || '';
+        if (responseText) {
+          return responseText;
+        }
+      } catch (error) {
+        console.warn(`⚠️ Groq API Error on ${modelName}:`, error.message);
+      }
+    }
+  }
+
+  throw new Error('All AI text generation models (Gemini & Groq) failed to respond.');
 }
 
 export async function extractReceiptAmount(imageBase64) {
