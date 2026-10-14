@@ -132,17 +132,17 @@ RULES & INTENT HANDLING:
 1. Standard Delivery Fee = ₦1,000 (0 to 4 Main Courses).
 2. Bulk Main Course Discount = ₦500 (5 or more Main Courses).`;
 
-// Active, verified Groq models for fallback
+// Active, supported Groq model identifiers
 const GROQ_MODELS = [
-  'llama-3.1-70b-versatile',
-  'llama3-8b-8192',
-  'llama3-70b-8192'
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b'
 ];
 
 export async function generateAIResponse(promptContext) {
   const geminiApiKey = process.env.GEMINI_API_KEY;
 
-  // 1. PRIMARY: Try Gemini 1.5 Flash first (High rate limits, fast, active)
+  // 1. PRIMARY: Try Gemini 1.5 Flash
   if (geminiApiKey) {
     try {
       const response = await fetch(
@@ -167,17 +167,22 @@ export async function generateAIResponse(promptContext) {
         }
       );
 
-      const data = await response.json();
-      const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (responseText) {
-        return responseText;
+      if (response.ok) {
+        const data = await response.json();
+        const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (responseText) {
+          return responseText;
+        }
+      } else {
+        const errBody = await response.text();
+        console.warn('⚠️ Gemini Text API returned status:', response.status, errBody);
       }
     } catch (geminiError) {
-      console.warn('⚠️ Primary Gemini Text API Error:', geminiError.message);
+      console.warn('⚠️ Gemini Text API Error:', geminiError.message);
     }
   }
 
-  // 2. SECONDARY: Fallback to active Groq models if Gemini fails
+  // 2. SECONDARY: Fallback to active Groq models if Gemini is down or key is missing
   if (groq) {
     for (const modelName of GROQ_MODELS) {
       try {
@@ -192,6 +197,7 @@ export async function generateAIResponse(promptContext) {
 
         const responseText = completion.choices[0]?.message?.content || '';
         if (responseText) {
+          console.log(`✅ Text generated using Groq fallback (${modelName})`);
           return responseText;
         }
       } catch (error) {
