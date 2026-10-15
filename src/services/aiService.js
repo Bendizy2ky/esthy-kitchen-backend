@@ -38,6 +38,8 @@ RULES & INTENT HANDLING:
 
 2. MENU PRESENTATION & FORMATTING (CRITICAL):
    - When asked for the menu, you MUST organize and group all available items by their category (e.g., Rice Meals, Proteins, Drinks, Pastries, etc.) based on the provided "Today's Live Menu:".
+  - ALWAYS order menu categories in this exact sequence: Rice Meals, Soup, Other Meals, Proteins, Pastries, Sides, Drinks. Do not alphabetize categories or change this sequence.
+  - Show only categories that contain at least one item in "Today's Live Menu:". If a category has no available items because all its items are unavailable or sold out, omit that empty category and continue with the next category in the exact sequence above. For example, if Rice Meals has no available items, show Soup next if Soup has available items.
    - NEVER output a flat, unorganized list with categories in parentheses.
    - ALWAYS use this visually clean layout for the menu, using bold text for categories:
 
