@@ -11,6 +11,8 @@ import { createCompleteOrder } from './services/orderService.js';
 import { parseCartData } from './utils/cartParser.js';
 import { handleAdminCommand } from './services/adminService.js';
 
+const TAKEAWAY_CATEGORIES = new Set(['rice meals', 'soup', 'other meals']);
+
 dotenv.config();
 
 const app = express();
@@ -276,11 +278,16 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
           aiResponse = aiResponse.replace(cartDataMatch[0], '').trim();
 
           if (parsedCartData && parsedCartData.length > 0) {
+            let takeawayPackQuantity = 0;
             parsedCartData = parsedCartData.map(item => {
               if (item.item_name.toLowerCase().includes('delivery')) {
                 const safeFee = Math.max(0, Number(item.unit_price) || 0);
                 secureTotalAmount += (safeFee * item.quantity);
                 return { ...item, unit_price: safeFee };
+              }
+
+              if (item.item_name.trim().toLowerCase() === 'takeaway pack') {
+                return null;
               }
               
               const dbItem = (menuItems || []).find(mi => mi.name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
@@ -288,6 +295,9 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
               if (dbItem) {
                 const truePrice = Number(dbItem.price);
                 const safeQty = Math.max(1, Number(item.quantity) || 1); 
+                if (TAKEAWAY_CATEGORIES.has(String(dbItem.category || '').trim().toLowerCase())) {
+                  takeawayPackQuantity += safeQty;
+                }
                 secureTotalAmount += (truePrice * safeQty);
                 return { ...item, unit_price: truePrice, quantity: safeQty, line_total: truePrice * safeQty, ready_time: dbItem.ready_time };
               } else {
@@ -296,7 +306,13 @@ If a customer orders an item that has a [SCHEDULED FOR: <Time>] tag next to it i
               }
             });
             
-            parsedCartData = parsedCartData.filter(item => item.quantity > 0 || item.item_name.toLowerCase().includes('delivery'));
+            parsedCartData = parsedCartData.filter(item => item && (item.quantity > 0 || item.item_name.toLowerCase().includes('delivery')));
+
+            if (takeawayPackQuantity > 0) {
+              const takeawayPackTotal = takeawayPackQuantity * 300;
+              parsedCartData.push({ item_name: 'Takeaway Pack', quantity: takeawayPackQuantity, unit_price: 300, line_total: takeawayPackTotal });
+              secureTotalAmount += takeawayPackTotal;
+            }
           }
         }
 
