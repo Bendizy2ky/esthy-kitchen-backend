@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js';
 import { sendWhatsAppMessage } from './whatsappService.js';
 import { createCompleteOrder } from './orderService.js';
 import { saveChatMessage } from './chatService.js';
+import { createReadyAt } from '../utils/readyTime.js';
 
 export async function handleAdminCommand(senderNumber, incomingText, rawMessageData, instanceName) {
   const cleanSender = senderNumber.split('@')[0].split(':')[0].replace(/\D/g, '');
@@ -198,7 +199,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     const itemName = text.substring(11).trim();
     const { data, error } = await supabase
       .from('menu_items')
-      .update({ is_available: true })
+      .update({ is_available: true, ready_time: null, ready_at: null })
       .ilike('name', `%${itemName}%`)
       .select();
 
@@ -220,14 +221,27 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     }
 
     const [itemName, readyTime] = parts;
+    const readyAt = createReadyAt(readyTime);
+
+    if (!readyAt) {
+      await sendWhatsAppMessage(senderNumber, '❌ *Invalid Time*. Use `#time Item Name | 3:00 PM` or `#time Item Name | 15:00`.', instanceName);
+      return true;
+    }
+
+    const timeHasPassed = new Date(readyAt).getTime() <= Date.now();
     const { data, error } = await supabase
       .from('menu_items')
-      .update({ ready_time: readyTime })
+      .update({
+        ready_time: timeHasPassed ? null : readyTime,
+        ready_at: timeHasPassed ? null : readyAt
+      })
       .ilike('name', `%${itemName}%`)
       .select();
 
     if (error || !data || data.length === 0) {
       await sendWhatsAppMessage(senderNumber, `❌ Item "*${itemName}*" not found.`, instanceName);
+    } else if (timeHasPassed) {
+      await sendWhatsAppMessage(senderNumber, `🕒 The scheduled time for *${data[0].name}* has already passed in Abuja today, so its scheduled time was cleared.`, instanceName);
     } else {
       await sendWhatsAppMessage(senderNumber, `🕒 *${data[0].name}* is now scheduled for *${readyTime}*.`, instanceName);
     }
@@ -238,7 +252,7 @@ Thank you! Your bank transfer has been manually verified by the kitchen manager.
     const itemName = text.substring(11).trim();
     const { data, error } = await supabase
       .from('menu_items')
-      .update({ ready_time: null })
+      .update({ ready_time: null, ready_at: null })
       .ilike('name', `%${itemName}%`)
       .select();
 
