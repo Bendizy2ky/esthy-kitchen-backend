@@ -3,7 +3,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { supabase } from './config/supabase.js';
-import { generateAIResponse, SYSTEM_PROMPT, transcribeAudioWithGroq, extractReceiptAmount } from './services/aiService.js'; 
+import { generateAIResponse, SYSTEM_PROMPT, transcribeAudioWithGroq } from './services/aiService.js'; 
 import { sendWhatsAppMessage, forwardMediaToManager, downloadWhatsAppMedia } from './services/whatsappService.js';
 import { getChatHistory, saveChatMessage } from './services/chatService.js';
 import { generatePaymentLink } from './services/paystackService.js';
@@ -92,8 +92,6 @@ app.post('/webhook/whatsapp', async (req, res) => {
           return;
         }
 
-        await sendWhatsAppMessage(senderNumber, 'I have received your receipt. Give me a moment to verify the payment... ⏳', instance);
-
         let base64Image = messageData.message?.base64 || imageMessage.base64;
         if (!base64Image) {
           const imageBuffer = await downloadWhatsAppMedia(messageData.key, instance);
@@ -103,27 +101,11 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
         if (!base64Image) throw new Error('No base64 image data was available for the receipt.');
 
-        const scannedAmount = await extractReceiptAmount(base64Image);
-        const amountPaid = Number.isFinite(Number(scannedAmount)) && scannedAmount !== null
-          ? Number(scannedAmount)
-          : null;
-
-        if (amountPaid !== null && amountPaid < cartTotal) {
-          const deficit = cartTotal - amountPaid;
-          await sendWhatsAppMessage(
-            senderNumber,
-            `I received your receipt for ₦${amountPaid.toLocaleString()}, but your order total is ₦${cartTotal.toLocaleString()}. Please transfer the outstanding balance of *₦${deficit.toLocaleString()}* so we can process your order.`,
-            instance
-          );
-          return; // State remains saved so customer can upload new receipt after paying balance
-        }
-
-        const needsManualReview = amountPaid === null;
         const orderCode = generateShortOrderCode();
         const { error: pendingOrderError } = await supabase.from('pending_orders').insert([{
           order_code: orderCode,
           customer_phone: senderNumber,
-          amount: needsManualReview ? cartTotal : amountPaid,
+          amount: cartTotal,
           cart_data: userState.current_cart,
           delivery_address: userState.delivery_address || 'Not provided'
         }]);
@@ -138,17 +120,9 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
         if (clearStateError) console.error('❌ Failed to clear receipt order state:', clearStateError.message);
 
-        const managerCaption = needsManualReview
-          ? `⚠️ Manual receipt review needed for ${senderNumber}.\nExpected order total: ₦${cartTotal.toLocaleString()}.\n\nReply #confirm ${orderCode} after manually verifying the transfer.`
-          : `✅ Payment of ₦${amountPaid.toLocaleString()} verified for${senderNumber}.\n\nOrder Details:\n${JSON.stringify(userState.current_cart, null, 2)}\n\nReply #confirm ${orderCode} to approve the order.`;
-
-        if (needsManualReview) {
-          await sendWhatsAppMessage(senderNumber, "I received your image, but I couldn't automatically read the final amount. I have forwarded it to the Kitchen Manager for manual review! 🙏", instance);
-        } else {
-          await sendWhatsAppMessage(senderNumber, 'Payment verified! 🎉 I am notifying the kitchen manager right now to start preparing your order. You will receive an official confirmation shortly.', instance);
-        }
-
+        const managerCaption = `⚠️ Manual receipt review needed for ${senderNumber}.\nExpected order total: ₦${cartTotal.toLocaleString()}.\n\nReply #confirm ${orderCode} after manually verifying the transfer.`;
         await forwardMediaToManager(base64Image, managerCaption, instance);
+        await sendWhatsAppMessage(senderNumber, 'I have received your payment receipt and forwarded it to the Kitchen Manager for manual verification. 🙏', instance);
       } catch (receiptError) {
         console.error('❌ Receipt image processing failed:', receiptError);
         await sendWhatsAppMessage(senderNumber, "I couldn't process that receipt image right now. Please try again or contact the Kitchen Manager for help.", instance);
